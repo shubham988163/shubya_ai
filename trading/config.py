@@ -27,8 +27,10 @@ NIFTY50 = [
     "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
 ]
 
-# What the strategy engine scans. Default: the full Nifty 50.
-SCAN_UNIVERSE = NIFTY50
+# What the strategy engine scans. The full-Nifty-50 sweep (Jul 9–10) lost
+# money in choppy conditions; the 6-stock core watchlist (Jul 7 setup) is the
+# only configuration that has been net-profitable so far.
+SCAN_UNIVERSE = WATCHLIST
 YF_SUFFIX = ".NS"
 
 DB_PATH = PROJECT_ROOT / "data" / "ledger.db"
@@ -47,6 +49,13 @@ POLL_SECONDS = 60               # live-loop poll interval (delayed data)
 SQUAREOFF_TIME = "15:15"        # IST intraday square-off
 MARKET_OPEN = "09:15"
 MARKET_CLOSE = "15:30"
+
+# --- Strategy: AVWAP scalp (python port of tradingview/avwap_scalp.pine) ---
+AVWAP_RR = 1.5                  # target = entry +/- 1.5x risk
+AVWAP_ATR_MULT = 0.5            # stop = candle extreme +/- 0.5x ATR(14)
+AVWAP_RSI_LEN = 14
+AVWAP_EMA_LEN = 20              # trend filter
+AVWAP_VOL_MULT = 1.2            # volume surge threshold vs 20-bar average
 
 # --- Risk kernel (hard limits — the AI agent can NEVER override these) ---
 DAILY_LOSS_LIMIT = -2000.0      # INR; hard stop for the day

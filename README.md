@@ -78,7 +78,8 @@ And the journal after the close:
 .venv/bin/python -m trading.dashboard [port]   # web dashboard (default 8787)
 .venv/bin/python -m trading.strategy           # live scan loop during market hours
 .venv/bin/python -m trading.strategy --once    # one scan pass, then exit
-.venv/bin/python -m trading.strategy --replay  # replay the last session bar-by-bar
+.venv/bin/python -m trading.strategy --replay [YYYY-MM-DD]  # replay a session bar-by-bar
+.venv/bin/python -m trading.strategy --strategy avwap       # AVWAP scalp instead of EMA 9/21
 .venv/bin/python -m trading.agents.premarket   # Role 1: regime + risk multiplier + blocked symbols
 .venv/bin/python -m trading.agents.supervisor --loop   # Role 2: async per-trade review
 .venv/bin/python -m trading.agents.eod_journal [date]  # Role 3: daily journal report

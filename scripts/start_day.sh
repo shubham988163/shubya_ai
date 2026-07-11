@@ -32,9 +32,9 @@ echo "dashboard    : http://localhost:8787"
 $PY -m trading.agents.supervisor --loop &
 echo "supervisor   : polling ledger"
 
-# 3. Python strategy engine — scans the Nifty 50 universe during market hours
+# 3. Python strategy engine — EMA 9/21 on the core watchlist (Jul-7 setup)
 $PY -m trading.strategy &
-echo "strategy     : scanning Nifty 50 (live loop)"
+echo "strategy     : EMA 9/21 on core watchlist (live loop)"
 
 # 3. TradingView bridge (receiver + tunnel) — prints webhook URL + secret
 exec ./scripts/tv_bridge.sh

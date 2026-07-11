@@ -33,6 +33,7 @@ from trading.config import (
     SCAN_UNIVERSE, YF_SUFFIX, FAST_EMA, SLOW_EMA, CANDLE_INTERVAL, SWING_LOOKBACK,
     RR_TARGET, RISK_PER_TRADE, POLL_SECONDS, SQUAREOFF_TIME, MARKET_OPEN,
     MARKET_CLOSE, MAX_POSITION_VALUE, CHARGES_PCT_ROUND_TRIP,
+    AVWAP_RR, AVWAP_ATR_MULT, AVWAP_RSI_LEN, AVWAP_EMA_LEN, AVWAP_VOL_MULT,
 )
 from trading.execution_router import ExecutionRouter
 from trading.ledger import Ledger
@@ -106,6 +107,92 @@ def swing_stop(df: pd.DataFrame, side: str) -> float:
     return float(window["Low"].min()) if side == "BUY" else float(window["High"].max())
 
 
+# --- indicators & signals: AVWAP scalp (port of tradingview/avwap_scalp.pine) ---
+
+def add_avwap(df: pd.DataFrame) -> pd.DataFrame:
+    """Daily-anchored VWAP with ±1σ bands, RSI, EMA trend filter, volume
+    surge flag, and ATR — same math as the Pine script."""
+    df = df.copy()
+    day = df.index.date
+    tp = (df["High"] + df["Low"] + df["Close"]) / 3
+    vol = df["Volume"].astype(float)
+    cum_vol = vol.groupby(day).cumsum()
+    avwap = (tp * vol).groupby(day).cumsum() / cum_vol
+    variance = ((tp * tp * vol).groupby(day).cumsum() / cum_vol - avwap**2).clip(lower=0)
+    sd = variance**0.5
+    df["avwap"] = avwap
+    df["sd1_up"] = avwap + sd
+    df["sd1_dn"] = avwap - sd
+
+    delta = df["Close"].diff()
+    gain = delta.clip(lower=0).ewm(alpha=1 / AVWAP_RSI_LEN, adjust=False).mean()
+    loss = (-delta.clip(upper=0)).ewm(alpha=1 / AVWAP_RSI_LEN, adjust=False).mean()
+    df["rsi"] = 100 - 100 / (1 + gain / loss)
+
+    df["ema_trend"] = df["Close"].ewm(span=AVWAP_EMA_LEN, adjust=False).mean()
+    df["vol_surge"] = vol > vol.rolling(AVWAP_EMA_LEN).mean() * AVWAP_VOL_MULT
+
+    prev_close = df["Close"].shift()
+    tr = pd.concat([df["High"] - df["Low"],
+                    (df["High"] - prev_close).abs(),
+                    (df["Low"] - prev_close).abs()], axis=1).max(axis=1)
+    df["atr"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    return df
+
+
+def detect_avwap(df: pd.DataFrame) -> str | None:
+    """AVWAP entry on the last completed bar. Three long setups (AVWAP
+    reclaim with volume + trend, lower-band bounce, lower-band cross) and
+    their short mirrors; requires the signal to be fresh (none on the
+    previous bar), mirroring the Pine `and not signal[1]` gate."""
+    if len(df) < AVWAP_EMA_LEN + 3:
+        return None
+    c, o = df["Close"], df["Open"]
+    rsi, hot = df["rsi"], df["vol_surge"]
+    up_x = (c > df["avwap"]) & (c.shift() <= df["avwap"].shift())
+    dn_x = (c < df["avwap"]) & (c.shift() >= df["avwap"].shift())
+    up_x_dn_band = (c > df["sd1_dn"]) & (c.shift() <= df["sd1_dn"].shift())
+    dn_x_up_band = (c < df["sd1_up"]) & (c.shift() >= df["sd1_up"].shift())
+
+    buy = ((up_x & (rsi > 45) & hot & (c > df["ema_trend"]))
+           | ((df["Low"] <= df["sd1_dn"]) & (c > o) & (c > df["sd1_dn"]) & (rsi > 45))
+           | (up_x_dn_band & (rsi > 45) & hot))
+    sell = ((dn_x & (rsi < 55) & hot & (c < df["ema_trend"]))
+            | ((df["High"] >= df["sd1_up"]) & (c < o) & (c < df["sd1_up"]) & (rsi < 55))
+            | (dn_x_up_band & (rsi < 55) & hot))
+
+    if bool(buy.iloc[-1]) and not bool(buy.iloc[-2]):
+        return "BUY"
+    if bool(sell.iloc[-1]) and not bool(sell.iloc[-2]):
+        return "SELL"
+    return None
+
+
+def avwap_stop(df: pd.DataFrame, side: str) -> float:
+    bar = df.iloc[-1]
+    pad = float(bar["atr"]) * AVWAP_ATR_MULT
+    return float(bar["Low"]) - pad if side == "BUY" else float(bar["High"]) + pad
+
+
+# Pluggable strategies: prepare(df) adds indicators, detect(df) yields a side,
+# stop(df, side) places the SL, rr sets the target, bias(bar) feeds the scan
+# summary line. The risk kernel in ExecutionRouter applies identically to all.
+STRATEGIES = {
+    "ema": {
+        "id": f"ema_{FAST_EMA}_{SLOW_EMA}_5m",
+        "prepare": add_emas, "detect": detect_cross,
+        "stop": swing_stop, "rr": RR_TARGET,
+        "bias": lambda bar: bar["ema_fast"] > bar["ema_slow"],
+    },
+    "avwap": {
+        "id": "avwap_scalp_5m",
+        "prepare": add_avwap, "detect": detect_avwap,
+        "stop": avwap_stop, "rr": AVWAP_RR,
+        "bias": lambda bar: bar["Close"] > bar["avwap"],
+    },
+}
+
+
 # --- engine ---
 
 def market_open_now() -> bool:
@@ -115,7 +202,8 @@ def market_open_now() -> bool:
 
 
 class Engine:
-    def __init__(self, router: ExecutionRouter, ledger: Ledger):
+    def __init__(self, router: ExecutionRouter, ledger: Ledger, strategy: str = "ema"):
+        self.strat = STRATEGIES[strategy]
         self.router = router
         self.ledger = ledger
         self.prices: dict[str, float] = {}
@@ -140,22 +228,23 @@ class Engine:
     def try_enter(self, symbol: str, df: pd.DataFrame, ts: float):
         if symbol in self.open:
             return
-        side = detect_cross(df)
+        side = self.strat["detect"](df)
         if side is None:
             return
         price = float(df.iloc[-1]["Close"])
-        sl = swing_stop(df, side)
+        sl = self.strat["stop"](df, side)
         risk = (price - sl) if side == "BUY" else (sl - price)
         if risk <= 0:
             return
-        target = price + RR_TARGET * risk if side == "BUY" else price - RR_TARGET * risk
+        rr = self.strat["rr"]
+        target = price + rr * risk if side == "BUY" else price - rr * risk
         qty = self.size(price, risk)
         if qty < 1:
             return
         self.prices[symbol] = price
         signal = {"symbol": symbol, "side": side, "qty": qty, "price": price,
                   "ts": ts, "stop_loss": round(sl, 2), "target": round(target, 2),
-                  "strategy_id": f"ema_{FAST_EMA}_{SLOW_EMA}_5m",
+                  "strategy_id": self.strat["id"],
                   "regime": self.router.day_config.get("regime")}
         trade_id = self.router.execute(signal)
         if trade_id:
@@ -228,7 +317,7 @@ class Engine:
             print("market closed — managing open positions only, no new entries")
         bull = bear = 0
         for symbol, df in frames.items():
-            df = add_emas(df)
+            df = self.strat["prepare"](df)
             bar = df.iloc[-1]
             self.prices[symbol] = float(bar["Close"])
             if self.last_bar.get(symbol) == df.index[-1]:
@@ -237,7 +326,7 @@ class Engine:
             self.manage_open(symbol, bar)
             if entries_ok:
                 self.try_enter(symbol, df, ts=df.index[-1].timestamp())
-            if bar["ema_fast"] > bar["ema_slow"]:
+            if self.strat["bias"](bar):
                 bull += 1
             else:
                 bear += 1
@@ -284,7 +373,7 @@ class Engine:
             for symbol, df in frames.items():
                 if i >= len(df):
                     continue
-                window = add_emas(df.iloc[: i + 1])
+                window = self.strat["prepare"](df.iloc[: i + 1])
                 bar = window.iloc[-1]
                 self.prices[symbol] = float(bar["Close"])
                 self.manage_open(symbol, bar)
@@ -297,9 +386,18 @@ class Engine:
 def main():
     ledger = Ledger()
     router = ExecutionRouter(mode="paper", ledger=ledger)
-    engine = Engine(router, ledger)
-    print(f"day config: {router.day_config}")
     args = sys.argv[1:]
+    # Default = EMA on the core watchlist: the exact Jul-7 setup, the only
+    # configuration that has been net-profitable. AVWAP looked good in the
+    # ledger (+222 over 6 TV trades) but systematic replays lose every day —
+    # run it with `--strategy avwap` if you want to keep testing it.
+    strategy = args[args.index("--strategy") + 1] if "--strategy" in args else "ema"
+    if strategy not in STRATEGIES:
+        print(f"unknown strategy {strategy!r} — choose from {list(STRATEGIES)}")
+        return
+    engine = Engine(router, ledger, strategy=strategy)
+    print(f"strategy: {engine.strat['id']}")
+    print(f"day config: {router.day_config}")
     if "--replay" in args:
         date = next((a for a in args if a[0].isdigit()), None)
         engine.replay(date)
