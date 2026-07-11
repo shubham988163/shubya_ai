@@ -108,6 +108,12 @@ def swing_stop(df: pd.DataFrame, side: str) -> float:
 
 # --- engine ---
 
+def market_open_now() -> bool:
+    """True only during a live NSE session (Mon–Fri, open → square-off, IST)."""
+    now = datetime.now(IST)
+    return now.weekday() < 5 and MARKET_OPEN <= now.strftime("%H:%M") < SQUAREOFF_TIME
+
+
 class Engine:
     def __init__(self, router: ExecutionRouter, ledger: Ledger):
         self.router = router
@@ -214,6 +220,12 @@ class Engine:
         except Exception as e:  # noqa: BLE001
             print(f"batch data error {e!r}")
             return
+        # Outside a live session the latest candle is Friday's/yesterday's close;
+        # it may hold an unprocessed crossover that would fill at a stale price
+        # and sit open all weekend. Manage exits, but take no new entries.
+        entries_ok = market_open_now()
+        if not entries_ok:
+            print("market closed — managing open positions only, no new entries")
         bull = bear = 0
         for symbol, df in frames.items():
             df = add_emas(df)
@@ -223,7 +235,8 @@ class Engine:
                 continue  # already acted on this bar
             self.last_bar[symbol] = df.index[-1]
             self.manage_open(symbol, bar)
-            self.try_enter(symbol, df, ts=df.index[-1].timestamp())
+            if entries_ok:
+                self.try_enter(symbol, df, ts=df.index[-1].timestamp())
             if bar["ema_fast"] > bar["ema_slow"]:
                 bull += 1
             else:
