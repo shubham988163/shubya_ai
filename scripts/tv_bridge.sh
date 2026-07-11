@@ -6,6 +6,12 @@
 # Usage:  ./scripts/tv_bridge.sh
 set -euo pipefail
 cd "$(dirname "$0")/.."
+mkdir -p data
+
+if ! command -v cloudflared >/dev/null; then
+  echo "ERROR: cloudflared not installed (macOS: brew install cloudflared)"
+  exit 1
+fi
 
 PORT=8788
 SECRET_FILE="data/tv_secret"

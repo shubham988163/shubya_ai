@@ -1,7 +1,0 @@
-{
-  "date": "2026-07-10",
-  "regime": "event_risk",
-  "risk_multiplier": 0.5,
-  "blocked_symbols": [],
-  "rationale": "Global markets are positive and VIX is low, but critical local market data (GIFT Nifty, news, and today's events) is unavailable. The absence of event information necessitates reduced risk."
-}

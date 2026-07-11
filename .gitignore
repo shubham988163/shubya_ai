@@ -1,0 +1,11 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Runtime data — never commit (trade ledger, today's config, webhook secret)
+data/
+logs/
+
+# macOS
+.DS_Store

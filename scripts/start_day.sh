@@ -1,15 +1,20 @@
 #!/usr/bin/env bash
 # One-command trading day: dashboard + supervisor agent + TradingView bridge.
 #
-#   cd ~/trading-agent && ./scripts/start_day.sh
+#   ./scripts/start_day.sh
 #
 # Ctrl-C stops everything. Requires GEMINI_API_KEY in the environment
 # (put `export GEMINI_API_KEY=...` in ~/.zshrc) — without it the agents
 # run in safe-fallback mode.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+mkdir -p data logs reports
 
 PY=.venv/bin/python
+if [ ! -x "$PY" ]; then
+  echo "ERROR: no virtualenv found. Run:  python3 -m venv .venv && .venv/bin/pip install -r requirements.txt"
+  exit 1
+fi
 export PYTHONUNBUFFERED=1   # stream child output live into logs
 
 if [ -z "${GEMINI_API_KEY:-}${ANTHROPIC_API_KEY:-}" ]; then
