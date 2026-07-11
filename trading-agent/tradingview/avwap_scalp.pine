@@ -1,0 +1,148 @@
+//@version=6
+// AVWAP Scalp Pro — Paper Bridge
+// Strategy conversion of shubhamnp39's "AVWAP Scalp Pro [NIFTY]" indicator,
+// wired into trading/tv_webhook.py like ema_9_21.pine.
+//
+// Signals (unchanged from the indicator):
+//   BUY : close crosses over AVWAP (RSI>45, high vol, close>EMA20)
+//         OR bounce off -1σ with a bull candle (RSI>45)
+//         OR close crosses over -1σ (RSI>45, high vol)
+//   SELL: mirror conditions around AVWAP / +1σ (RSI<55)
+// Execution added:
+//   stop   : ATR(14) x atrMult beyond the signal bar's low/high
+//   target : entry ± riskReward x risk   (T1 only — no partial exits)
+//   filter : optional 5-min EMA9/EMA20/RSI confluence (the MTF panel's logic)
+//   sizing : ₹200 risk per trade; session 09:20–15:00, square-off 15:15 IST
+//
+// Run on an intraday chart (1m/3m/5m). Alert setup is identical to
+// ema_9_21.pine: ONE alert, "Order fills only",
+// message {{strategy.order.alert_message}}, webhook URL from tv_bridge.sh.
+// Tip: keep the original indicator on the chart for the labels/MTF table —
+// this strategy is the execution engine, the indicator stays your eyes.
+
+strategy("AVWAP Scalp Pro — Paper Bridge", overlay = true,
+     initial_capital = 100000,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+riskReward    = input.float(1.5, "RR Ratio", minval = 1.0, step = 0.5)
+atrMult       = input.float(0.5, "ATR Multiplier", minval = 0.1, step = 0.1)
+emaLength     = input.int(20, "EMA Length", minval = 5)
+volMultiplier = input.float(1.2, "Volume Multiplier", minval = 1.0, step = 0.1)
+// Default OFF: the confluence gate is a trend filter, but most AVWAP entries
+// are mean-reversion (band bounces) — requiring 5-min trend agreement at the
+// moment of a countertrend bounce vetoes nearly every signal.
+useMTF        = input.bool(false, "Require 5-min confluence")
+riskInr       = input.float(200.0, "Risk per trade (INR)")
+showSD1       = input.bool(true, "Show 1σ Bands")
+showSD2       = input.bool(true, "Show 2σ Bands")
+secret        = input.string("change-me", "Webhook secret")
+
+STRAT_ID = "tv_avwap_scalp"
+
+// ── Anchored VWAP (daily anchor) + σ bands ─────────────────────────────
+isNewDay = ta.change(time("D")) != 0
+tp = hlc3
+
+var float cumVol   = 0.0
+var float cumTPV   = 0.0
+var float cumTP2V  = 0.0
+if isNewDay
+    cumVol   := 0.0
+    cumTPV   := 0.0
+    cumTP2V  := 0.0
+cumVol   += volume
+cumTPV   += tp * volume
+cumTP2V  += tp * tp * volume
+
+avwap    = cumVol > 0 ? cumTPV / cumVol : tp
+variance = cumVol > 0 ? math.max(cumTP2V / cumVol - avwap * avwap, 0.0) : 0.0
+stdev    = math.sqrt(variance)
+sd1Up = avwap + stdev
+sd1Dn = avwap - stdev
+sd2Up = avwap + 2.0 * stdev
+sd2Dn = avwap - 2.0 * stdev
+
+p0  = plot(avwap, "AVWAP", color = color.yellow, linewidth = 2)
+p1u = plot(showSD1 ? sd1Up : na, "1σ Up", color = color.new(color.blue, 30))
+p1d = plot(showSD1 ? sd1Dn : na, "1σ Dn", color = color.new(color.blue, 30))
+p2u = plot(showSD2 ? sd2Up : na, "2σ Up", color = color.new(color.orange, 30))
+p2d = plot(showSD2 ? sd2Dn : na, "2σ Dn", color = color.new(color.orange, 30))
+fill(p1u, p1d, color = color.new(color.blue, 92))
+
+// ── Filters & signals (same logic as the indicator) ────────────────────
+rsi14      = ta.rsi(close, 14)
+ema20      = ta.ema(close, emaLength)
+avgVol     = ta.sma(volume, 20)
+atr14      = ta.atr(14)
+isHighVol  = volume > avgVol * volMultiplier
+bullCandle = close > open and close > close[1]
+bearCandle = close < open and close < close[1]
+plot(ema20, "EMA", color = color.new(color.purple, 20), linewidth = 1)
+
+buyC1 = ta.crossover(close, avwap) and rsi14 > 45 and isHighVol and close > ema20
+buyC2 = low <= sd1Dn and bullCandle and close > sd1Dn and rsi14 > 45
+buyC3 = ta.crossover(close, sd1Dn) and rsi14 > 45 and isHighVol
+buySignal = (buyC1 or buyC2 or buyC3) and not (buyC1[1] or buyC2[1] or buyC3[1])
+
+sellC1 = ta.crossunder(close, avwap) and rsi14 < 55 and isHighVol and close < ema20
+sellC2 = high >= sd1Up and bearCandle and close < sd1Up and rsi14 < 55
+sellC3 = ta.crossunder(close, sd1Up) and rsi14 < 55 and isHighVol
+sellSignal = (sellC1 or sellC2 or sellC3) and not (sellC1[1] or sellC2[1] or sellC3[1])
+
+plotshape(buySignal,  title = "BUY",  location = location.belowbar,
+     style = shape.labelup,   color = color.lime, textcolor = color.black, text = "BUY",  size = size.small)
+plotshape(sellSignal, title = "SELL", location = location.abovebar,
+     style = shape.labeldown, color = color.red,  textcolor = color.white, text = "SELL", size = size.small)
+
+// ── 5-min confluence (the MTF panel's OVERALL row, as an entry filter) ──
+e9_5  = request.security(syminfo.tickerid, "5", ta.ema(close, 9))
+e20_5 = request.security(syminfo.tickerid, "5", ta.ema(close, 20))
+c5    = request.security(syminfo.tickerid, "5", close)
+r5    = request.security(syminfo.tickerid, "5", ta.rsi(close, 14))
+bull5 = c5 > e20_5 and e9_5 > e20_5 and r5 > 50
+bear5 = c5 < e20_5 and e9_5 < e20_5 and r5 < 50
+buyOk  = not useMTF or bull5
+sellOk = not useMTF or bear5
+
+// ── Sessions (IST, weekdays) ────────────────────────────────────────────
+inSession = not na(time(timeframe.period, "0920-1500:23456", "Asia/Kolkata"))
+squareOff = not na(time(timeframe.period, "1515-1530:23456", "Asia/Kolkata"))
+
+// ── Webhook payloads (consumed by trading/tv_webhook.py) ────────────────
+exitMsg = '{"secret":"' + secret + '","event":"exit","strategy_id":"' + STRAT_ID +
+     '","symbol":"' + syminfo.ticker + '","price":{{close}}}'
+
+entryMsg(string side, float qty, float sl, float tgt) =>
+    '{"secret":"' + secret + '","event":"entry","strategy_id":"' + STRAT_ID +
+         '","symbol":"' + syminfo.ticker + '","side":"' + side +
+         '","qty":' + str.tostring(qty, "#") +
+         ',"price":' + str.tostring(close, "#.##") +
+         ',"sl":' + str.tostring(sl, "#.##") +
+         ',"target":' + str.tostring(tgt, "#.##") + '}'
+
+// ── Execution ───────────────────────────────────────────────────────────
+if buySignal and buyOk and inSession and strategy.position_size == 0
+    sl = low - atr14 * atrMult
+    risk = close - sl
+    if risk > 0
+        qty = math.max(1, math.floor(riskInr / risk))
+        tgt = close + riskReward * risk
+        strategy.entry("L", strategy.long, qty = qty,
+             alert_message = entryMsg("BUY", qty, sl, tgt))
+        strategy.exit("Lx", from_entry = "L", stop = sl, limit = tgt,
+             alert_message = exitMsg)
+
+if sellSignal and sellOk and inSession and strategy.position_size == 0
+    sl = high + atr14 * atrMult
+    risk = sl - close
+    if risk > 0
+        qty = math.max(1, math.floor(riskInr / risk))
+        tgt = close - riskReward * risk
+        strategy.entry("S", strategy.short, qty = qty,
+             alert_message = entryMsg("SELL", qty, sl, tgt))
+        strategy.exit("Sx", from_entry = "S", stop = sl, limit = tgt,
+             alert_message = exitMsg)
+
+if squareOff and strategy.position_size != 0
+    strategy.close_all(alert_message = exitMsg, comment = "EOD squareoff")

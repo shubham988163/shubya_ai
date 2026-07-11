@@ -1,0 +1,89 @@
+//@version=6
+// EMA 9/21 Crossover — Paper Bridge
+// Mirrors trading/strategy.py exactly:
+//   entry  : EMA(9) crosses EMA(21) on a closed 5-min candle (long + short)
+//   stop   : swing low/high of the last 10 bars
+//   target : entry ± 2 × risk (1:2)
+//   sizing : ₹200 risk per trade
+//   session: entries 09:20–15:00 IST, square-off 15:15 IST
+//
+// Every order fill emits a JSON alert_message consumed by trading/tv_webhook.py.
+//
+// ── TradingView setup (paid plan required for webhooks) ─────────────────
+// 1. Add this strategy to a 5-minute NSE chart.
+// 2. Set the "Webhook secret" input to the same value as TV_WEBHOOK_SECRET
+//    on your receiver.
+// 3. Create ONE alert: Condition = this strategy → "Order fills only".
+//    Message:  {{strategy.order.alert_message}}
+//    Webhook URL:  https://<your-tunnel>/webhook
+// ─────────────────────────────────────────────────────────────────────────
+
+strategy("EMA 9/21 Crossover — Paper Bridge", overlay = true,
+     initial_capital = 100000,
+     calc_on_every_tick = false,
+     process_orders_on_close = true)
+
+fastLen  = input.int(9,      "Fast EMA")
+slowLen  = input.int(21,     "Slow EMA")
+swingLen = input.int(10,     "Swing lookback (stop)")
+rr       = input.float(2.0,  "Risk:Reward target")
+riskInr  = input.float(200.0, "Risk per trade (INR)")
+secret   = input.string("change-me", "Webhook secret")
+
+STRAT_ID = "tv_ema_9_21"
+
+fast = ta.ema(close, fastLen)
+slow = ta.ema(close, slowLen)
+plot(fast, "EMA fast", color = color.new(color.blue, 0))
+plot(slow, "EMA slow", color = color.new(color.orange, 0))
+
+// IST session windows (weekdays)
+inSession = not na(time(timeframe.period, "0920-1500:23456", "Asia/Kolkata"))
+squareOff = not na(time(timeframe.period, "1515-1530:23456", "Asia/Kolkata"))
+
+longCross  = ta.crossover(fast, slow)
+shortCross = ta.crossunder(fast, slow)
+
+// ta.* series must be computed on every bar (not inside if-blocks),
+// otherwise Pine warns about inconsistent history.
+swingLow  = ta.lowest(low, swingLen)
+swingHigh = ta.highest(high, swingLen)
+
+// {{close}} is a TradingView alert placeholder — resolved at alert-fire time,
+// so exits report the actual fill-bar price.
+exitMsg = '{"secret":"' + secret + '","event":"exit","strategy_id":"' + STRAT_ID +
+     '","symbol":"' + syminfo.ticker + '","price":{{close}}}'
+
+entryMsg(string side, float qty, float sl, float tgt) =>
+    '{"secret":"' + secret + '","event":"entry","strategy_id":"' + STRAT_ID +
+         '","symbol":"' + syminfo.ticker + '","side":"' + side +
+         '","qty":' + str.tostring(qty, "#") +
+         ',"price":' + str.tostring(close, "#.##") +
+         ',"sl":' + str.tostring(sl, "#.##") +
+         ',"target":' + str.tostring(tgt, "#.##") + '}'
+
+if longCross and inSession and strategy.position_size == 0
+    sl = swingLow
+    risk = close - sl
+    if risk > 0
+        qty = math.max(1, math.floor(riskInr / risk))
+        tgt = close + rr * risk
+        strategy.entry("L", strategy.long, qty = qty,
+             alert_message = entryMsg("BUY", qty, sl, tgt))
+        strategy.exit("Lx", from_entry = "L", stop = sl, limit = tgt,
+             alert_message = exitMsg)
+
+if shortCross and inSession and strategy.position_size == 0
+    sl = swingHigh
+    risk = sl - close
+    if risk > 0
+        qty = math.max(1, math.floor(riskInr / risk))
+        tgt = close - rr * risk
+        strategy.entry("S", strategy.short, qty = qty,
+             alert_message = entryMsg("SELL", qty, sl, tgt))
+        strategy.exit("Sx", from_entry = "S", stop = sl, limit = tgt,
+             alert_message = exitMsg)
+
+// intraday square-off
+if squareOff and strategy.position_size != 0
+    strategy.close_all(alert_message = exitMsg, comment = "EOD squareoff")

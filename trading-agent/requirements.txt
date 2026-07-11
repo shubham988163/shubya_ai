@@ -1,0 +1,10 @@
+pydantic>=2.0
+google-genai>=1.0     # Gemini (used when GEMINI_API_KEY is set)
+anthropic>=0.90.0     # Claude (used when ANTHROPIC_API_KEY is set)
+
+# Optional — uncomment as you build out the pipeline
+# yfinance          # free delayed data for the pre-market agent while prototyping
+# pandas            # strategy engine
+# pandas-ta         # indicators
+# kiteconnect       # Zerodha Kite Connect (live ticks / live orders)
+# vectorbt          # backtesting
