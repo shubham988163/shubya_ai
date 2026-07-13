@@ -16,11 +16,15 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
+from zoneinfo import ZoneInfo
 
 from trading.config import DB_PATH, TODAY_CONFIG_PATH, REPORTS_DIR
 from trading.ledger import Ledger
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 def _breakdown(trades: list[dict], key: str) -> list[dict]:
@@ -53,8 +57,13 @@ def get_data(date: str | None) -> dict:
 
     dates = [r["date"] for r in conn.execute(
         "SELECT DISTINCT date FROM trades ORDER BY date DESC").fetchall()]
+    # Today belongs in the picker (and is the default view) even before the
+    # first trade of the day, so a live session never looks "missing".
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    if today not in dates:
+        dates.insert(0, today)
     if not date:
-        date = dates[0] if dates else None
+        date = today
 
     trades = [dict(r) for r in conn.execute(
         "SELECT * FROM trades WHERE date = ? ORDER BY ts", (date,)).fetchall()] if date else []
