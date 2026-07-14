@@ -38,10 +38,13 @@ TODAY_CONFIG_PATH = PROJECT_ROOT / "data" / "today_config.json"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 LOGS_DIR = PROJECT_ROOT / "logs"
 
-# --- Strategy: EMA crossover on 5-minute candles ---
+# --- Strategy: EMA crossover ---
 FAST_EMA = 9
 SLOW_EMA = 21
-CANDLE_INTERVAL = "5m"
+# 15m: the only net-positive config in the Jun-30→Jul-13 backtest
+# (+145 net / +1083 gross over 10 sessions; every 5m variant lost after
+# charges — 5m moves are too small to clear ~0.16% round-trip friction).
+CANDLE_INTERVAL = "15m"
 SWING_LOOKBACK = 10             # bars used to find the swing low/high for the stop
 RR_TARGET = 2.0                 # target = entry +/- 2x risk (1:2)
 RISK_PER_TRADE = 200.0          # INR risked per trade -> sizes the position

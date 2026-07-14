@@ -42,17 +42,21 @@ from trading.notify import notify
 IST = ZoneInfo("Asia/Kolkata")
 
 
+def _bar_minutes() -> int:
+    return int(CANDLE_INTERVAL.rstrip("m"))
+
+
 # --- data & indicators ---
 
 def fetch_candles(symbol: str, period: str = "5d") -> pd.DataFrame:
-    """Closed 5-minute candles for an NSE symbol, IST-indexed."""
+    """Closed intraday candles (CANDLE_INTERVAL) for an NSE symbol, IST-indexed."""
     df = yf.Ticker(symbol + YF_SUFFIX).history(period=period, interval=CANDLE_INTERVAL)
     if df.empty:
         return df
     df = df.tz_convert(IST)
     # Drop the still-forming candle so we only ever act on closed bars.
     now = datetime.now(IST)
-    if df.index[-1] + timedelta(minutes=5) > now:
+    if df.index[-1] + timedelta(minutes=_bar_minutes()) > now:
         df = df.iloc[:-1]
     return df
 
@@ -76,7 +80,7 @@ def fetch_all_candles(symbols: list[str], period: str = "5d") -> dict[str, pd.Da
         if df.empty:
             continue
         df = df.tz_convert(IST)
-        if df.index[-1] + timedelta(minutes=5) > now:
+        if df.index[-1] + timedelta(minutes=_bar_minutes()) > now:
             df = df.iloc[:-1]
         if not df.empty:
             out[sym] = df
@@ -123,6 +127,8 @@ def add_avwap(df: pd.DataFrame) -> pd.DataFrame:
     df["avwap"] = avwap
     df["sd1_up"] = avwap + sd
     df["sd1_dn"] = avwap - sd
+    df["sd2_up"] = avwap + 2 * sd
+    df["sd2_dn"] = avwap - 2 * sd
 
     delta = df["Close"].diff()
     gain = delta.clip(lower=0).ewm(alpha=1 / AVWAP_RSI_LEN, adjust=False).mean()
@@ -174,12 +180,49 @@ def avwap_stop(df: pd.DataFrame, side: str) -> float:
     return float(bar["Low"]) - pad if side == "BUY" else float(bar["High"]) + pad
 
 
+# --- indicators & signals: VWAP 2-sigma mean reversion ---
+# The opposite temperament to the EMA/AVWAP chasers that bled in chop: act
+# only when price is stretched to the 2-sigma band of the daily anchored VWAP
+# with RSI at an extreme AND the candle rejecting the band, then target a
+# reversion to VWAP itself. Few signals, full-ATR stop, mean as the target.
+
+def detect_revert(df: pd.DataFrame) -> str | None:
+    if len(df) < AVWAP_EMA_LEN + 3:
+        return None
+    bar = df.iloc[-1]
+    c, o = float(bar["Close"]), float(bar["Open"])
+    if float(bar["Low"]) <= float(bar["sd2_dn"]) and c > float(bar["sd2_dn"]) \
+            and c > o and float(bar["rsi"]) < 35:
+        return "BUY"
+    if float(bar["High"]) >= float(bar["sd2_up"]) and c < float(bar["sd2_up"]) \
+            and c < o and float(bar["rsi"]) > 65:
+        return "SELL"
+    return None
+
+
+def revert_stop(df: pd.DataFrame, side: str) -> float:
+    bar = df.iloc[-1]
+    pad = float(bar["atr"])                      # full ATR: room to breathe
+    return float(bar["Low"]) - pad if side == "BUY" else float(bar["High"]) + pad
+
+
+def revert_target(df: pd.DataFrame, side: str, price: float, sl: float) -> float | None:
+    """Target the anchored VWAP; skip the trade when the reversion distance
+    doesn't pay at least 1R."""
+    target = float(df.iloc[-1]["avwap"])
+    risk = (price - sl) if side == "BUY" else (sl - price)
+    reward = (target - price) if side == "BUY" else (price - target)
+    if risk <= 0 or reward < risk:
+        return None
+    return target
+
+
 # Pluggable strategies: prepare(df) adds indicators, detect(df) yields a side,
 # stop(df, side) places the SL, rr sets the target, bias(bar) feeds the scan
 # summary line. The risk kernel in ExecutionRouter applies identically to all.
 STRATEGIES = {
     "ema": {
-        "id": f"ema_{FAST_EMA}_{SLOW_EMA}_5m",
+        "id": f"ema_{FAST_EMA}_{SLOW_EMA}_{CANDLE_INTERVAL}",
         "prepare": add_emas, "detect": detect_cross,
         "stop": swing_stop, "rr": RR_TARGET,
         "bias": lambda bar: bar["ema_fast"] > bar["ema_slow"],
@@ -188,6 +231,12 @@ STRATEGIES = {
         "id": "avwap_scalp_5m",
         "prepare": add_avwap, "detect": detect_avwap,
         "stop": avwap_stop, "rr": AVWAP_RR,
+        "bias": lambda bar: bar["Close"] > bar["avwap"],
+    },
+    "revert": {
+        "id": "vwap_revert_5m",
+        "prepare": add_avwap, "detect": detect_revert,
+        "stop": revert_stop, "target": revert_target,
         "bias": lambda bar: bar["Close"] > bar["avwap"],
     },
 }
@@ -236,8 +285,13 @@ class Engine:
         risk = (price - sl) if side == "BUY" else (sl - price)
         if risk <= 0:
             return
-        rr = self.strat["rr"]
-        target = price + rr * risk if side == "BUY" else price - rr * risk
+        if "target" in self.strat:
+            target = self.strat["target"](df, side, price, sl)
+            if target is None:
+                return              # reversion doesn't pay enough — skip
+        else:
+            rr = self.strat["rr"]
+            target = price + rr * risk if side == "BUY" else price - rr * risk
         qty = self.size(price, risk)
         if qty < 1:
             return
@@ -351,33 +405,35 @@ class Engine:
                 print(f"{hhmm} IST — waiting for open")
             time.sleep(POLL_SECONDS)
 
-    def replay(self, date: str | None = None):
-        """Replay a session bar-by-bar through the same rules — a dry run on
-        real market data that writes real (paper) trades to the ledger."""
-        frames = {}
-        for symbol, df in fetch_all_candles(SCAN_UNIVERSE, period="5d").items():
-            if date:
-                df = df[df.index.strftime("%Y-%m-%d") == date]
-            else:
-                last_day = df.index[-1].strftime("%Y-%m-%d")
-                df = df[df.index.strftime("%Y-%m-%d") == last_day]
-            if len(df) > SLOW_EMA + 2:
-                frames[symbol] = df
-        if not frames:
+    def replay(self, date: str | None = None, period: str = "5d"):
+        """Replay one session bar-by-bar through the same rules — a dry run on
+        real market data that writes real (paper) trades to the ledger.
+        Bars from earlier days in the fetched period serve as indicator
+        warm-up (like the live engine's history); only the target date
+        trades."""
+        raw = fetch_all_candles(SCAN_UNIVERSE, period=period)
+        if not raw:
             print("no candle data to replay")
             return
-        day = next(iter(frames.values())).index[0].strftime("%Y-%m-%d")
-        print(f"replaying {day} for {', '.join(frames)}")
-        n = max(len(df) for df in frames.values())
-        for i in range(SLOW_EMA + 2, n):
-            for symbol, df in frames.items():
-                if i >= len(df):
+        target = date or max(df.index[-1].strftime("%Y-%m-%d") for df in raw.values())
+        stamps = sorted({ts for df in raw.values() for ts in df.index
+                         if ts.strftime("%Y-%m-%d") == target})
+        if not stamps:
+            print(f"no bars for {target}")
+            return
+        print(f"replaying {target} for {', '.join(raw)}")
+        for ts in stamps:
+            for symbol, df in raw.items():
+                if ts not in df.index:
                     continue
-                window = self.strat["prepare"](df.iloc[: i + 1])
+                idx = df.index.get_loc(ts)
+                if idx < SLOW_EMA + 2:
+                    continue
+                window = self.strat["prepare"](df.iloc[: idx + 1])
                 bar = window.iloc[-1]
                 self.prices[symbol] = float(bar["Close"])
                 self.manage_open(symbol, bar)
-                self.try_enter(symbol, window, ts=window.index[-1].timestamp())
+                self.try_enter(symbol, window, ts=ts.timestamp())
         self.squareoff("replay EOD")
         print(f"\nreplay done — day P&L: {self.ledger.day_realized_pnl():.2f} INR "
               f"({len(self.ledger.trades_for_date())} trades today in ledger)")
