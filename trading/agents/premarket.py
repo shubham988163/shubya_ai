@@ -59,7 +59,10 @@ def gather_overnight_context() -> dict[str, str]:
         for name, ticker in [("S&P 500", "^GSPC"), ("Nasdaq", "^IXIC"),
                              ("Nikkei", "^N225"), ("India VIX", "^INDIAVIX")]:
             try:
-                h = yf.Ticker(ticker).history(period="2d")["Close"]
+                # 5d + dropna: the latest row can be NaN while a session is
+                # unconsolidated — NaNs here once read as "all data lost" and
+                # made the agent halt a normal day.
+                h = yf.Ticker(ticker).history(period="5d")["Close"].dropna()
                 if len(h) >= 2:
                     chg = (h.iloc[-1] / h.iloc[-2] - 1) * 100
                     snapshots.append(f"{name}: {h.iloc[-1]:.0f} ({chg:+.2f}%)")
