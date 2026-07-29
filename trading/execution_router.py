@@ -76,6 +76,9 @@ class ExecutionRouter:
         if signal["symbol"] in self.day_config.get("blocked_symbols", []):
             return f"symbol_blocked_by_premarket_agent ({self.day_config.get('rationale', '')})"
 
+        if self.day_config["risk_multiplier"] <= 0:
+            return "risk_multiplier_zero (pre-market halt)"
+
         if self.ledger.day_realized_pnl() <= DAILY_LOSS_LIMIT:
             return "daily_loss_limit_hit"
 
@@ -85,11 +88,13 @@ class ExecutionRouter:
             return f"max_open_positions ({len(open_positions)}/{MAX_OPEN_POSITIONS})"
 
         position_value = signal["qty"] * signal["price"]
-        # The agent's risk multiplier SHRINKS the cap; it can never grow it.
-        effective_cap = MAX_POSITION_VALUE * self.day_config["risk_multiplier"]
+        # Hard capital cap, never scaled: with a small account, scaling the
+        # cap priced out every symbol on cautious days. The agent's risk
+        # multiplier instead scales RISK_PER_TRADE in the engine's sizing
+        # (and 0 still halts, above) — it can shrink size, never grow it.
         existing = self.ledger.open_position_value(signal["symbol"])
-        if existing + position_value > effective_cap:
-            return f"max_position_value (cap={effective_cap:.0f}, would_be={existing + position_value:.0f})"
+        if existing + position_value > MAX_POSITION_VALUE:
+            return f"max_position_value (cap={MAX_POSITION_VALUE:.0f}, would_be={existing + position_value:.0f})"
 
         return None
 
