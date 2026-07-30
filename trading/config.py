@@ -47,10 +47,10 @@ SLOW_EMA = 21
 CANDLE_INTERVAL = "15m"
 SWING_LOOKBACK = 10             # bars used to find the swing low/high for the stop
 RR_TARGET = 2.0                 # target = entry +/- 2x risk (1:2)
-# Survival-account sizing (2026-07-27): total capital is 2,000 INR, so risk
-# ~1.5% per trade. Losing the account is not an option — see risk kernel.
-ACCOUNT_CAPITAL = 2_000.0
-RISK_PER_TRADE = 30.0           # INR risked per trade -> sizes the position
+# Account sizing (2026-07-30): capital raised to 10,00,000 INR ("1000k").
+# Risk 0.5% per trade — standard prudent intraday sizing at this scale.
+ACCOUNT_CAPITAL = 1_000_000.0
+RISK_PER_TRADE = 5_000.0        # INR risked per trade (0.5%) -> sizes the position
 POLL_SECONDS = 60               # live-loop poll interval (delayed data)
 SQUAREOFF_TIME = "15:15"        # IST intraday square-off
 MARKET_OPEN = "09:15"
@@ -64,10 +64,10 @@ AVWAP_EMA_LEN = 20              # trend filter
 AVWAP_VOL_MULT = 1.2            # volume surge threshold vs 20-bar average
 
 # --- Risk kernel (hard limits — the AI agent can NEVER override these) ---
-# Scaled to ACCOUNT_CAPITAL = 2,000 INR (survival account):
-DAILY_LOSS_LIMIT = -100.0       # INR; hard stop for the day (5% of capital)
-MAX_POSITION_VALUE = 2_000.0    # INR per position (no leverage assumed)
-MAX_OPEN_POSITIONS = 1          # one position at a time — capital allows no more
+# Scaled to ACCOUNT_CAPITAL = 10,00,000 INR:
+DAILY_LOSS_LIMIT = -10_000.0    # INR; hard stop for the day (1% of capital)
+MAX_POSITION_VALUE = 200_000.0  # INR per position (20% of capital)
+MAX_OPEN_POSITIONS = 5          # portfolio cap (max 100% of capital deployed)
 MAX_ORDERS_PER_SEC = 8          # SEBI 10-OPS threshold with buffer
 
 # --- Fill simulation (paper mode) ---
