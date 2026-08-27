@@ -12,7 +12,7 @@ from __future__ import annotations
 import random
 import time
 
-from trading.config import CHARGES_PCT_ROUND_TRIP
+from trading.costs import round_trip as round_trip_charges
 from trading.execution_router import ExecutionRouter
 from trading.ledger import Ledger
 
@@ -44,8 +44,7 @@ def main():
     # 3. Close trade 1 with a simulated exit
     if trade_id:
         exit_price = get_ltp("RELIANCE") * 1.004  # pretend it went our way
-        turnover = signal["qty"] * (signal["price"] + exit_price)
-        charges = turnover * CHARGES_PCT_ROUND_TRIP
+        charges = round_trip_charges(signal["price"], exit_price, signal["qty"])
         pnl = ledger.record_exit(trade_id, exit_price, charges=charges,
                                  mae=-4.5, mfe=13.2)
         print(f"closed trade {trade_id}: net pnl = {pnl:.2f} INR")

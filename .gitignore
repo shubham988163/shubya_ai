@@ -3,9 +3,18 @@
 __pycache__/
 *.pyc
 
-# Runtime data — never commit (trade ledger, today's config, webhook secret)
-data/
+# Runtime data — never commit (trade ledger, today's config, webhook secret).
+# Listed as data/* rather than data/ so the synthetic fixtures below can be
+# re-included: git cannot un-ignore a file inside an ignored *directory*.
+data/*
 logs/
+
+# ...except the replay bundles. These are generated, synthetic candles with no
+# real positions or credentials, and trading/test_fno.py loads one of them — a
+# fresh clone must be able to run its own test suite.
+!data/fno/
+data/fno/*
+!data/fno/*.json
 
 # macOS
 .DS_Store

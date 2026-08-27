@@ -3,6 +3,7 @@ google-genai>=1.0     # Gemini (used when GEMINI_API_KEY is set)
 anthropic>=0.90.0     # Claude (used when ANTHROPIC_API_KEY is set)
 pandas>=2.0           # strategy engine
 yfinance>=0.2.40      # free delayed NSE data (candles + pre-market snapshot)
+requests>=2.31        # NSE public endpoints (F&O open interest, indices)
 
 # Optional — uncomment as you build out the pipeline
 # pandas-ta          # extra indicators

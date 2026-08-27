@@ -32,14 +32,21 @@ import yfinance as yf
 from trading.config import (
     SCAN_UNIVERSE, YF_SUFFIX, FAST_EMA, SLOW_EMA, CANDLE_INTERVAL, SWING_LOOKBACK,
     RR_TARGET, RISK_PER_TRADE, POLL_SECONDS, SQUAREOFF_TIME, MARKET_OPEN,
-    MARKET_CLOSE, MAX_POSITION_VALUE, CHARGES_PCT_ROUND_TRIP,
+    MARKET_CLOSE, MAX_POSITION_VALUE,
     AVWAP_RR, AVWAP_ATR_MULT, AVWAP_RSI_LEN, AVWAP_EMA_LEN, AVWAP_VOL_MULT,
 )
+from trading.costs import round_trip as round_trip_charges
 from trading.execution_router import ExecutionRouter
 from trading.ledger import Ledger
 from trading.notify import notify
 
 IST = ZoneInfo("Asia/Kolkata")
+
+# Consecutive no-data scans before the engine gives up and asks to be restarted.
+# At POLL_SECONDS=60 that is five minutes of blindness.
+MAX_BLIND_SCANS = 5
+# Exit code meaning "transient data failure, please restart me" (EX_TEMPFAIL).
+EXIT_DATA_BLACKOUT = 75
 
 
 def _bar_minutes() -> int:
@@ -63,11 +70,22 @@ def fetch_candles(symbol: str, period: str = "5d") -> pd.DataFrame:
 
 def fetch_all_candles(symbols: list[str], period: str = "5d") -> dict[str, pd.DataFrame]:
     """Batched candle download for the whole universe — one HTTP call for all
-    symbols instead of one per symbol (matters at Nifty-50 scale)."""
+    symbols instead of one per symbol (matters at Nifty-50 scale).
+
+    threads=False is deliberate and load-bearing. With threads=True, yfinance
+    opens a peewee sqlite connection to its timezone cache per worker thread
+    and never closes it (close_db() only reaches the main thread's). That leaks
+    ~2 fds per symbol per call, so a 60s poll loop crosses macOS's 256-fd soft
+    limit inside one session and every subsequent fetch dies with
+    OperationalError('unable to open database file') — the engine goes blind
+    mid-session and square-off then prices positions at entry. Measured
+    2026-08-10: +6 fds per 3-symbol call threaded, flat at 4 unthreaded.
+    Sequential is comfortably fast enough at a 60s poll.
+    """
     data = yf.download(
         tickers=[s + YF_SUFFIX for s in symbols],
         period=period, interval=CANDLE_INTERVAL,
-        group_by="ticker", threads=True, progress=False, auto_adjust=True,
+        group_by="ticker", threads=False, progress=False, auto_adjust=True,
     )
     now = datetime.now(IST)
     out: dict[str, pd.DataFrame] = {}
@@ -217,6 +235,119 @@ def revert_target(df: pd.DataFrame, side: str, price: float, sl: float) -> float
     return target
 
 
+# --- indicators & signals: 9 EMA + standard pivot points -----------------
+# Floor-trader pivots off the *previous* session's H/L/C, used two ways:
+#   pivot_ema    - the "9 EMA + pivot point" intraday setup: price reclaims the
+#                  9 EMA on the correct side of the daily pivot, stop at the
+#                  nearest pivot behind, target the next pivot ahead.
+#   ema_pivot    - the existing EMA 9/21 cross with the pivot only as a
+#                  directional filter (longs above P, shorts below P), keeping
+#                  the swing stop and 1:2 target. Isolates what the filter adds.
+# Pivots are computed from intraday bars, so H/L/C span market hours only —
+# a few paise off an official daily bar, immaterial at these level widths.
+
+PIVOT_LEVELS_UP = ["pp", "r1", "r2", "r3"]
+PIVOT_LEVELS_DN = ["pp", "s1", "s2", "s3"]
+
+
+def add_pivots(df: pd.DataFrame) -> pd.DataFrame:
+    df = add_emas(df)
+    day = pd.Series(df.index.date, index=df.index)
+    daily = df.groupby(day).agg(H=("High", "max"), L=("Low", "min"), C=("Close", "last"))
+    prev = daily.shift(1)                       # yesterday's range — never today's
+    pp = (prev["H"] + prev["L"] + prev["C"]) / 3
+    rng = prev["H"] - prev["L"]
+    levels = {
+        "pp": pp,
+        "r1": 2 * pp - prev["L"], "s1": 2 * pp - prev["H"],
+        "r2": pp + rng,           "s2": pp - rng,
+        "r3": prev["H"] + 2 * (pp - prev["L"]),
+        "s3": prev["L"] - 2 * (prev["H"] - pp),
+    }
+    for name, series in levels.items():
+        df[name] = day.map(series)
+
+    prev_close = df["Close"].shift()
+    tr = pd.concat([df["High"] - df["Low"],
+                    (df["High"] - prev_close).abs(),
+                    (df["Low"] - prev_close).abs()], axis=1).max(axis=1)
+    df["atr"] = tr.ewm(alpha=1 / 14, adjust=False).mean()
+    return df
+
+
+def _pivot_bias(bar: pd.Series) -> int:
+    """+1 above the daily pivot, -1 below, 0 when pivots aren't available yet
+    (first session of the frame)."""
+    pp = bar.get("pp")
+    if pp is None or pd.isna(pp):
+        return 0
+    return 1 if float(bar["Close"]) > float(pp) else -1
+
+
+def detect_pivot_ema(df: pd.DataFrame) -> str | None:
+    """Close reclaims/loses the 9 EMA, taken only in the pivot's direction."""
+    if len(df) < FAST_EMA + 2:
+        return None
+    prev, last = df.iloc[-2], df.iloc[-1]
+    if pd.isna(last.get("pp")):
+        return None
+    up = prev["Close"] <= prev["ema_fast"] and last["Close"] > last["ema_fast"]
+    dn = prev["Close"] >= prev["ema_fast"] and last["Close"] < last["ema_fast"]
+    bias = _pivot_bias(last)
+    if up and bias > 0:
+        return "BUY"
+    if dn and bias < 0:
+        return "SELL"
+    return None
+
+
+def _nearest_level(bar: pd.Series, names: list[str], price: float, below: bool) -> float | None:
+    vals = [float(bar[n]) for n in names if not pd.isna(bar.get(n))]
+    side = [v for v in vals if (v < price if below else v > price)]
+    if not side:
+        return None
+    return max(side) if below else min(side)
+
+
+def pivot_stop(df: pd.DataFrame, side: str) -> float:
+    """Nearest pivot level behind the entry, padded by 0.25 ATR so a level
+    tag doesn't stop us out. Falls back to a 1-ATR stop past the level set."""
+    bar = df.iloc[-1]
+    price = float(bar["Close"])
+    pad = float(bar["atr"]) * 0.25
+    if side == "BUY":
+        lvl = _nearest_level(bar, PIVOT_LEVELS_DN, price, below=True)
+        return (lvl - pad) if lvl is not None else price - float(bar["atr"])
+    lvl = _nearest_level(bar, PIVOT_LEVELS_UP, price, below=False)
+    return (lvl + pad) if lvl is not None else price + float(bar["atr"])
+
+
+def pivot_target(df: pd.DataFrame, side: str, price: float, sl: float) -> float | None:
+    """Next pivot level ahead. Skipped when it doesn't pay at least 1R —
+    the level structure, not a fixed RR, decides whether the trade is worth it."""
+    bar = df.iloc[-1]
+    lvl = _nearest_level(bar, PIVOT_LEVELS_UP if side == "BUY" else PIVOT_LEVELS_DN,
+                         price, below=(side != "BUY"))
+    if lvl is None:
+        return None
+    risk = (price - sl) if side == "BUY" else (sl - price)
+    reward = (lvl - price) if side == "BUY" else (price - lvl)
+    if risk <= 0 or reward < risk:
+        return None
+    return lvl
+
+
+def detect_ema_pivot(df: pd.DataFrame) -> str | None:
+    """The existing EMA 9/21 cross, gated on the pivot bias."""
+    side = detect_cross(df)
+    if side is None:
+        return None
+    bias = _pivot_bias(df.iloc[-1])
+    if (side == "BUY" and bias > 0) or (side == "SELL" and bias < 0):
+        return side
+    return None
+
+
 # Pluggable strategies: prepare(df) adds indicators, detect(df) yields a side,
 # stop(df, side) places the SL, rr sets the target, bias(bar) feeds the scan
 # summary line. The risk kernel in ExecutionRouter applies identically to all.
@@ -238,6 +369,20 @@ STRATEGIES = {
         "prepare": add_avwap, "detect": detect_revert,
         "stop": revert_stop, "target": revert_target,
         "bias": lambda bar: bar["Close"] > bar["avwap"],
+    },
+    # The Instagram reel's setup: 9 EMA reclaim + standard pivot points.
+    "pivot": {
+        "id": f"pivot_ema{FAST_EMA}",
+        "prepare": add_pivots, "detect": detect_pivot_ema,
+        "stop": pivot_stop, "target": pivot_target,
+        "bias": lambda bar: _pivot_bias(bar) > 0,
+    },
+    # Minimal change to the live system: existing EMA 9/21 + pivot filter.
+    "ema_pivot": {
+        "id": f"ema_{FAST_EMA}_{SLOW_EMA}_pivotfilter",
+        "prepare": add_pivots, "detect": detect_ema_pivot,
+        "stop": swing_stop, "rr": RR_TARGET,
+        "bias": lambda bar: bar["ema_fast"] > bar["ema_slow"],
     },
 }
 
@@ -266,6 +411,7 @@ class Engine:
                 "target": t["target"], "mae": 0.0, "mfe": 0.0,
             }
         self.last_bar: dict[str, object] = {}
+        self.blind_scans = 0        # consecutive scans that returned no data
 
     def size(self, price: float, risk_per_share: float) -> int:
         if risk_per_share <= 0 or price <= 0:
@@ -344,7 +490,10 @@ class Engine:
 
     def _close(self, symbol: str, exit_price: float):
         pos = self.open.pop(symbol)
-        charges = pos["qty"] * (pos["entry"] + exit_price) * CHARGES_PCT_ROUND_TRIP
+        # Itemised Zerodha charges, not a flat percentage: brokerage is capped
+        # at Rs 20/order, so the flat model overstated costs by ~2x once
+        # position sizes reached Rs 2L (and by ~13% at the old Rs 25k sizes).
+        charges = round_trip_charges(pos["entry"], exit_price, pos["qty"])
         pnl = self.ledger.record_exit(pos["trade_id"], round(exit_price, 2),
                                       charges=round(charges, 2),
                                       mae=round(pos["mae"], 2), mfe=round(pos["mfe"], 2))
@@ -365,7 +514,18 @@ class Engine:
             frames = fetch_all_candles(SCAN_UNIVERSE)
         except Exception as e:  # noqa: BLE001
             print(f"batch data error {e!r}")
+            self.blind_scans += 1
             return
+        # A data blackout does NOT raise — yfinance returns an empty/partial dict
+        # per symbol. On 2026-08-10 the engine scanned 0/6 for ~40 minutes and
+        # kept reporting success, so a crash-only watchdog would never fire.
+        # Count consecutive shutouts; live() escalates.
+        if not frames:
+            self.blind_scans += 1
+            print(f"data blackout — 0/{len(SCAN_UNIVERSE)} symbols "
+                  f"({self.blind_scans} consecutive)")
+            return
+        self.blind_scans = 0
         # Outside a live session the latest candle is Friday's/yesterday's close;
         # it may hold an unprocessed crossover that would fill at a stale price
         # and sit open all weekend. Manage exits, but take no new entries.
@@ -398,12 +558,24 @@ class Engine:
             now = datetime.now(IST)
             hhmm = now.strftime("%H:%M")
             if hhmm >= SQUAREOFF_TIME:
+                if self.blind_scans and self.open:
+                    # No fresh prices means squareoff() would close at the entry
+                    # price and book a fake ~0 P&L. Say so loudly in the log.
+                    print(f"WARNING: squaring off during a data blackout "
+                          f"({self.blind_scans} blind scans) — exit prices are stale")
                 self.squareoff("EOD")
                 if hhmm >= MARKET_CLOSE:
                     print("market closed — exiting")
                     return
             elif hhmm >= MARKET_OPEN:
                 self.scan_once()
+                if self.blind_scans >= MAX_BLIND_SCANS:
+                    # Exit non-zero so cron_day.sh restarts us with a fresh
+                    # process. The 2026-08-10 failure was unrecoverable in-process:
+                    # yfinance had already exhausted the fd limit.
+                    print(f"FATAL: {self.blind_scans} consecutive blind scans — "
+                          f"exiting {EXIT_DATA_BLACKOUT} for supervisor restart")
+                    sys.exit(EXIT_DATA_BLACKOUT)
             else:
                 print(f"{hhmm} IST — waiting for open")
             time.sleep(POLL_SECONDS)
@@ -442,7 +614,27 @@ class Engine:
               f"({len(self.ledger.trades_for_date())} trades today in ledger)")
 
 
+def raise_fd_limit(target: int = 8192):
+    """Lift the file-descriptor soft limit (macOS defaults to 256).
+
+    Belt and braces behind the threads=False fix in fetch_all_candles: if any
+    dependency leaks fds again, a session should degrade slowly rather than go
+    blind two hours before square-off. The hard limit is unlimited, so raising
+    the soft limit needs no privileges.
+    """
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        want = min(target, hard) if hard != resource.RLIM_INFINITY else target
+        if soft < want:
+            resource.setrlimit(resource.RLIMIT_NOFILE, (want, hard))
+            print(f"fd soft limit raised {soft} -> {want}")
+    except Exception as e:  # noqa: BLE001 - never block a session over this
+        print(f"could not raise fd limit ({e!r}) — continuing")
+
+
 def main():
+    raise_fd_limit()
     ledger = Ledger()
     router = ExecutionRouter(mode="paper", ledger=ledger)
     args = sys.argv[1:]

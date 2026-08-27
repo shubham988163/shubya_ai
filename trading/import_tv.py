@@ -22,7 +22,7 @@ import csv
 import sys
 from datetime import datetime
 
-from trading.config import CHARGES_PCT_ROUND_TRIP
+from trading.costs import round_trip as round_trip_charges
 from trading.ledger import Ledger
 
 
@@ -91,7 +91,7 @@ def run(path: str, symbol: str = "UNKNOWN", tag: str = "tv_backtest") -> int:
                 conn.execute("UPDATE trades SET date = ? WHERE id = ?",
                              (datetime.fromtimestamp(e["ts"]).strftime("%Y-%m-%d"),
                               trade_id))
-        charges = qty * (e["price"] + x["price"]) * CHARGES_PCT_ROUND_TRIP
+        charges = round_trip_charges(e["price"], x["price"], qty)
         mfe = (t["exit"]["runup"] / qty) if x.get("runup") else None
         mae = (-t["exit"]["drawdown"] / qty) if x.get("drawdown") else None
         ledger.record_exit(trade_id, x["price"], charges=round(charges, 2),

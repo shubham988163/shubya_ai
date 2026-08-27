@@ -33,6 +33,14 @@ NIFTY50 = [
 SCAN_UNIVERSE = WATCHLIST
 YF_SUFFIX = ".NS"
 
+# --- data retention ---
+# The dashboard is a working screen, not an archive. Keep the last N *sessions*
+# (not calendar days — a long weekend would otherwise eat one) of trades,
+# rejections, agent logs, journal reports and cached candles.
+# Pruning is destructive: raise this, or pass --keep-days, before it runs if you
+# want a longer history. See trading/retention.py.
+RETENTION_DAYS = 5
+
 DB_PATH = PROJECT_ROOT / "data" / "ledger.db"
 TODAY_CONFIG_PATH = PROJECT_ROOT / "data" / "today_config.json"
 REPORTS_DIR = PROJECT_ROOT / "reports"

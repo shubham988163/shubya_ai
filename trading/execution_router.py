@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import json
 import time
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from trading.config import (
     DAILY_LOSS_LIMIT,
@@ -20,6 +22,8 @@ from trading.config import (
     FALLBACK_DAY_CONFIG,
 )
 from trading.ledger import Ledger
+
+IST = ZoneInfo("Asia/Kolkata")
 
 
 class RateLimiter:
@@ -40,10 +44,25 @@ class RateLimiter:
 
 
 def load_day_config() -> dict:
-    """Read the config written by the pre-market agent; safe defaults if absent."""
+    """Read the config written by the pre-market agent; safe defaults if absent.
+
+    A config whose `date` is not today is REJECTED. The router re-reads this
+    file on every order, so a stale file would silently apply an old session's
+    regime, risk multiplier and blocked_symbols to today's trades — e.g. after
+    a missed pre-market run (2026-08-13 was skipped entirely because the Mac
+    was asleep, leaving 08-12's config in place). Falling back to
+    FALLBACK_DAY_CONFIG trades at half size instead of trusting stale advice.
+    """
     try:
         with open(TODAY_CONFIG_PATH) as f:
             cfg = json.load(f)
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        cfg_date = str(cfg.get("date", ""))
+        if cfg_date != today:
+            stale = dict(FALLBACK_DAY_CONFIG)
+            stale["rationale"] = (f"fallback: today_config.json is for {cfg_date or 'an unknown date'}, "
+                                  f"not {today} — pre-market agent did not run today")
+            return stale
         cfg["risk_multiplier"] = max(0.0, min(1.0, float(cfg.get("risk_multiplier", 0.5))))
         cfg.setdefault("blocked_symbols", [])
         cfg.setdefault("regime", "choppy")

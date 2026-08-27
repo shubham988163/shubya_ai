@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Daily trading session, 09:05 IST Mon-Fri.
+
+  Why launchd instead of cron: cron silently skips a job when the Mac is
+  asleep and never catches up. Two full trading days (2026-08-11 and
+  2026-08-13) were lost that way. launchd runs a missed StartCalendarInterval
+  job on the next wake, coalescing multiple missed intervals into one run.
+
+  cron_day.sh guards against a late catch-up firing after 15:30 IST or on a
+  weekend, so an evening wake exits immediately instead of burning LLM quota.
+
+  Install with scripts/install_schedule.sh (do not edit this copy in place --
+  it is the version-controlled source, installed to ~/Library/LaunchAgents).
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.aitradeagent.day</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>__PROJECT_ROOT__/scripts/cron_day.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>__PROJECT_ROOT__</string>
+
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+    <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>5</integer></dict>
+  </array>
+
+  <key>StandardOutPath</key>
+  <string>__PROJECT_ROOT__/logs/cron_day.log</string>
+  <key>StandardErrorPath</key>
+  <string>__PROJECT_ROOT__/logs/cron_day.log</string>
+
+  <!-- Never start a session just because the agent was (re)loaded. -->
+  <key>RunAtLoad</key>
+  <false/>
+
+  <!-- One session at a time; the engine runs until market close. -->
+  <key>AbandonProcessGroup</key>
+  <false/>
+</dict>
+</plist>

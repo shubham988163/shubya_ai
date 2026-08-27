@@ -26,7 +26,7 @@ import sys
 import time
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
-from trading.config import CHARGES_PCT_ROUND_TRIP
+from trading.costs import round_trip as round_trip_charges
 from trading.execution_router import ExecutionRouter
 from trading.ledger import Ledger
 from trading.notify import notify
@@ -80,7 +80,7 @@ def handle_exit(p: dict) -> dict:
         return {"ok": False, "error": f"no open {strategy_id} trade for {symbol}"}
     closed = []
     for t in open_trades:  # TV closes the whole position; mirror that
-        charges = t["qty"] * (t["entry_price"] + exit_price) * CHARGES_PCT_ROUND_TRIP
+        charges = round_trip_charges(t["entry_price"], exit_price, t["qty"])
         pnl = ledger.record_exit(t["id"], round(exit_price, 2),
                                  charges=round(charges, 2))
         print(f"EXIT  {t['side']} {symbol} @ {exit_price:.2f} -> pnl {pnl:.2f}")
