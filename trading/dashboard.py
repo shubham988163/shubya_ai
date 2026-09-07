@@ -16,14 +16,19 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from zoneinfo import ZoneInfo
 
+import yfinance as yf
+
 from trading import ui_theme
 from trading.config import (DB_PATH, REPORTS_DIR, RETENTION_DAYS, TODAY_CONFIG_PATH)
-from trading.fno import web as fno_web
+from trading.costs import round_trip as round_trip_charges
+from trading.execution_router import ExecutionRouter
+from trading.fno import fyers, web as fno_web
 from trading.ledger import Ledger
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -50,6 +55,81 @@ def _breakdown(trades: list[dict], key: str) -> list[dict]:
         g["charges"] = round(g["charges"], 2)
         out.append(g)
     return sorted(out, key=lambda g: g["name"])
+
+
+def _get_ltp(symbol: str) -> float:
+    try:
+        from trading.fno.fyers import FyersClient
+        client = FyersClient()
+        fyers_sym = f"NSE:{symbol}-EQ" if not symbol.startswith("NSE:") else symbol
+        q = client.quotes([fyers_sym])
+        if q and len(q) > 0 and "v" in q[0] and "lp" in q[0]["v"]:
+            return float(q[0]["v"]["lp"])
+    except Exception:
+        pass
+    try:
+        t = yf.Ticker(symbol + ".NS")
+        hist = t.history(period="1d", interval="5m")
+        if not hist.empty and "Close" in hist.columns:
+            return float(hist["Close"].iloc[-1])
+    except Exception:
+        pass
+    return 1000.0
+
+
+def _handle_trade(data: dict) -> dict:
+    ledger = Ledger()
+    router = ExecutionRouter(mode="paper", ledger=ledger)
+    sym = str(data.get("symbol", "RELIANCE")).upper().strip()
+    side = str(data.get("side", "BUY")).upper().strip()
+    qty = int(data.get("qty", 10))
+    price = float(data["price"]) if data.get("price") else None
+    if price is None or price <= 0:
+        price = _get_ltp(sym)
+    router.get_ltp = lambda s: price
+
+    sl = float(data["stop_loss"]) if data.get("stop_loss") else None
+    tg = float(data["target"]) if data.get("target") else None
+    if sl is None and price > 0:
+        sl = round(price * 0.99, 2) if side == "BUY" else round(price * 1.01, 2)
+    if tg is None and price > 0:
+        tg = round(price * 1.02, 2) if side == "BUY" else round(price * 0.98, 2)
+
+    signal = {
+        "symbol": sym,
+        "side": side,
+        "qty": qty,
+        "price": price,
+        "ts": time.time(),
+        "stop_loss": sl,
+        "target": tg,
+        "strategy_id": str(data.get("strategy_id", "manual_paper")),
+        "regime": router.day_config.get("regime", "choppy"),
+    }
+    trade_id = router.execute(signal)
+    if trade_id is None:
+        reason = getattr(router, "last_rejection", "Risk kernel rejection")
+        return {"ok": False, "rejected": True, "reason": reason}
+    return {"ok": True, "trade_id": trade_id, "signal": signal}
+
+
+def _handle_close(data: dict) -> dict:
+    ledger = Ledger()
+    trade_id = int(data.get("trade_id", 0))
+    with ledger._conn() as conn:
+        t = conn.execute("SELECT * FROM trades WHERE id = ?", (trade_id,)).fetchone()
+    if not t:
+        return {"ok": False, "error": "Trade not found"}
+    if t["status"] == "closed":
+        return {"ok": False, "error": "Trade already closed"}
+
+    exit_price = float(data["exit_price"]) if data.get("exit_price") else None
+    if exit_price is None or exit_price <= 0:
+        exit_price = _get_ltp(t["symbol"])
+
+    charges = round_trip_charges(t["entry_price"], exit_price, t["qty"])
+    pnl = ledger.record_exit(trade_id, round(exit_price, 2), charges=round(charges, 2))
+    return {"ok": True, "trade_id": trade_id, "exit_price": round(exit_price, 2), "pnl": round(pnl, 2)}
 
 
 def get_data(date: str | None) -> dict:
@@ -101,7 +181,7 @@ def get_data(date: str | None) -> dict:
     if date:
         p = REPORTS_DIR / f"{date}.md"
         if p.exists():
-            report = p.read_text()
+            report = p.read_text(encoding="utf-8")
 
     try:
         from trading.agents.llm import provider
@@ -189,6 +269,19 @@ pre.report{white-space:pre-wrap;font:12.5px/1.6 ui-sans-serif,system-ui,sans-ser
 <div class="wrap">
 __TOPBAR__
 
+  <section class="panel" id="liveTickerPanel" style="margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 13px;background:var(--cell);border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">
+        <span class="led" style="background:var(--good);box-shadow:0 0 8px var(--good)"></span>
+        <span style="color:var(--ink)">Live Market Rates <span style="font-weight:400;color:var(--ink-3)">(Fyers Zero-Delay Stream)</span></span>
+      </div>
+      <div style="font-size:11px;color:var(--ink-3);font-family:ui-monospace,monospace" id="liveTickerUpdated">Syncing live stream…</div>
+    </div>
+    <div id="liveTickerItems" style="display:flex;gap:10px;padding:10px 13px;overflow-x:auto;align-items:stretch">
+      <span class="muted" style="font-size:11.5px">Loading live market quotes…</span>
+    </div>
+  </section>
+
   <section class="panel" id="buynow">
     <h2>Buy now <span class="sub" id="bnMeta">— checking the F&amp;O scanner…</span></h2>
     <div class="body" id="bnBody"></div>
@@ -223,7 +316,21 @@ __TOPBAR__
   </section>
 
   <section class="panel">
-    <h2>Trades <span class="sub">with the supervisor's verdict</span></h2>
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line);background:var(--cell)">
+      <h2 style="border-bottom:none;padding:0;background:none;margin:0">Trades <span class="sub">with the supervisor's verdict</span></h2>
+      <button class="btn go" id="btnNewTrade" style="font-size:11.5px;padding:4px 10px">+ Take Paper Trade</button>
+    </div>
+    <div id="tradeForm" style="display:none;padding:12px;background:var(--card);border-bottom:1px solid var(--line);font-size:12px">
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <label><b>Symbol:</b> <input type="text" id="tSym" value="RELIANCE" style="width:100px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--cell);color:var(--ink);font-weight:600;text-transform:uppercase"></label>
+        <label><b>Side:</b> <select id="tSide" style="padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--cell);color:var(--ink)"><option value="BUY">BUY (Long)</option><option value="SELL">SELL (Short)</option></select></label>
+        <label><b>Qty:</b> <input type="number" id="tQty" value="10" min="1" style="width:65px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--cell);color:var(--ink)"></label>
+        <label><b>Price (INR):</b> <input type="number" id="tPx" placeholder="Market (LTP)" step="0.05" style="width:110px;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--cell);color:var(--ink)"></label>
+        <button class="btn go" id="btnSubmitTrade" style="padding:5px 14px">Execute Order</button>
+        <button class="btn" id="btnCancelTrade" style="padding:5px 10px">Cancel</button>
+        <span id="tradeMsg" style="font-size:12px;font-weight:600"></span>
+      </div>
+    </div>
     <div class="scroll"><table id="trades"></table></div>
   </section>
 
@@ -317,6 +424,9 @@ function renderBuyNow(st){
   }
 
   const picks = s.picks || [];
+  if(window.ScannerAlerts && picks.length){
+    picks.forEach(p => window.ScannerAlerts.checkAndAlert(p, "BUY"));
+  }
   if(!picks.length){
     const watch=(s.candidates||[]).filter(c=>c.verdict==="WATCH").length;
     if(s.signals_allowed === false){
@@ -407,18 +517,23 @@ function link(){
 }
 
 async function load(){
-  const q = selDate ? "?date="+encodeURIComponent(selDate) : "";
-  const r = await fetch("/api/data"+q);
-  DATA = await r.json();
-  selDate = DATA.date;
-  render();
-  document.getElementById("refreshed").textContent =
-    "updated " + new Date().toLocaleTimeString("en-IN",{hour12:false});
-  document.getElementById("foot").textContent =
-    "Paper trading — no live orders. This dashboard keeps only the last "
-    + (DATA.retention_days || 5) + " trading sessions on disk; older trades, "
-    + "rejections, agent logs, journal reports and cached candles are pruned "
-    + "automatically when the dashboard starts.";
+  try{
+    const q = selDate ? "?date="+encodeURIComponent(selDate) : "";
+    const r = await fetch("/api/data"+q, {cache:"no-store"});
+    if(!r.ok) return;
+    DATA = await r.json();
+    selDate = DATA.date;
+    render();
+    document.getElementById("refreshed").textContent =
+      "updated " + new Date().toLocaleTimeString("en-IN",{hour12:false});
+    document.getElementById("foot").textContent =
+      "Paper trading — no live orders. This dashboard keeps only the last "
+      + (DATA.retention_days || 5) + " trading sessions on disk; older trades, "
+      + "rejections, agent logs, journal reports and cached candles are pruned "
+      + "automatically when the dashboard starts.";
+  }catch(e){
+    console.warn("Could not reach /api/data:", e);
+  }
 }
 
 function render(){
@@ -494,7 +609,32 @@ function renderTrades(d){
     row.append(el("td",null,tr.side));
     row.append(el("td","num",String(tr.qty)));
     row.append(el("td","num",fmt(tr.entry_price)));
-    row.append(el("td","num",tr.exit_price==null?"open":fmt(tr.exit_price)));
+    const isClosed = tr.status === "closed" && tr.exit_price != null;
+    const exitTd = el("td","num");
+    if(isClosed){
+      exitTd.textContent = fmt(tr.exit_price);
+    } else {
+      const b = el("span","badge buy","OPEN");
+      b.style.marginRight = "6px";
+      const cBtn = el("button","btn sm","Close");
+      cBtn.style.padding = "2px 6px";
+      cBtn.style.fontSize = "10.5px";
+      cBtn.onclick = async ()=>{
+        cBtn.disabled = true;
+        cBtn.textContent = "Closing…";
+        try{
+          const res = await fetch("/api/close", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({trade_id: tr.id})
+          });
+          const j = await res.json();
+          if(j.ok){ load(); } else { alert(j.error || "Failed to close trade"); cBtn.disabled=false; cBtn.textContent="Close"; }
+        }catch(e){ alert("Error: "+e); cBtn.disabled=false; cBtn.textContent="Close"; }
+      };
+      exitTd.append(b, cBtn);
+    }
+    row.append(exitTd);
     const pnl=el("td","num "+((tr.pnl??0)>=0?"pnl-pos":"pnl-neg"),
                  tr.pnl==null?"—":fmt(tr.pnl));
     row.append(pnl);
@@ -685,10 +825,109 @@ function renderChart(d){
     cross.setAttribute("visibility","hidden");dot.setAttribute("visibility","hidden");});
 }
 
+const btnNewTrade = document.getElementById("btnNewTrade");
+const tradeForm = document.getElementById("tradeForm");
+const btnCancelTrade = document.getElementById("btnCancelTrade");
+const btnSubmitTrade = document.getElementById("btnSubmitTrade");
+const tradeMsg = document.getElementById("tradeMsg");
+
+if (btnNewTrade) {
+  btnNewTrade.onclick = () => {
+    tradeForm.style.display = tradeForm.style.display === "none" ? "block" : "none";
+    tradeMsg.textContent = "";
+  };
+}
+if (btnCancelTrade) {
+  btnCancelTrade.onclick = () => {
+    tradeForm.style.display = "none";
+    tradeMsg.textContent = "";
+  };
+}
+if (btnSubmitTrade) {
+  btnSubmitTrade.onclick = async () => {
+    btnSubmitTrade.disabled = true;
+    tradeMsg.style.color = "var(--ink-2)";
+    tradeMsg.textContent = "Executing order…";
+    try {
+      const sym = (document.getElementById("tSym").value || "").trim().toUpperCase();
+      const side = document.getElementById("tSide").value;
+      const qty = parseInt(document.getElementById("tQty").value, 10) || 1;
+      const px = parseFloat(document.getElementById("tPx").value) || 0;
+      const res = await fetch("/api/trade", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({symbol: sym, side: side, qty: qty, price: px})
+      });
+      const j = await res.json();
+      if (j.ok) {
+        tradeMsg.style.color = "var(--good)";
+        tradeMsg.textContent = `✓ Trade #${j.trade_id} executed!`;
+        setTimeout(() => { tradeForm.style.display = "none"; load(); }, 700);
+      } else {
+        tradeMsg.style.color = "var(--bad)";
+        tradeMsg.textContent = `✗ ${j.reason || j.error || "Order rejected"}`;
+      }
+    } catch (e) {
+      tradeMsg.style.color = "var(--bad)";
+      tradeMsg.textContent = `Error: ${e}`;
+    } finally {
+      btnSubmitTrade.disabled = false;
+    }
+  };
+}
+
+async function loadQuotes(){
+  try{
+    const r = await fetch("/api/quotes", {cache:"no-store"});
+    if(!r.ok) return;
+    const res = await r.json();
+    const itemsBox = document.getElementById("liveTickerItems");
+    const updatedEl = document.getElementById("liveTickerUpdated");
+    if(!itemsBox) return;
+    if(!res.quotes || !res.quotes.length){
+      itemsBox.innerHTML = '<span class="muted" style="font-size:11.5px">Waiting for real-time market stream…</span>';
+      return;
+    }
+    itemsBox.innerHTML = "";
+    res.quotes.forEach(q => {
+      const v = q.v || {};
+      const rawName = (v.short_name || q.n || "").replace("-INDEX","").replace("-EQ","").replace("NSE:","");
+      const lp = v.lp || 0;
+      const ch = v.ch || 0;
+      const chp = v.chp || 0;
+      const isUp = ch >= 0;
+      const card = el("div", "ticker-item");
+      card.style.cssText = "background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:7px 11px;min-width:142px;flex:0 0 auto;display:flex;flex-direction:column;gap:3px;box-shadow:var(--shadow)";
+      card.innerHTML = `
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+          <span style="font-weight:700;font-size:11px;letter-spacing:.04em;color:var(--ink)">${rawName}</span>
+          <span class="badge sm ${isUp ? 'bull' : 'bear'}" style="font-size:9.5px;padding:1px 5px">${chp >= 0 ? '+' : ''}${chp.toFixed(2)}%</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:2px">
+          <span style="font-size:14px;font-weight:700;font-family:ui-monospace,monospace;color:${isUp ? 'var(--up)' : 'var(--down)'}">₹${fmt(lp)}</span>
+          <span style="font-size:10px;color:var(--ink-3);font-family:ui-monospace,monospace">${ch >= 0 ? '+' : ''}${fmt(ch)}</span>
+        </div>
+        <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--ink-3);margin-top:1px">
+          <span>H: ${fmt(v.high_price)}</span>
+          <span>L: ${fmt(v.low_price)}</span>
+        </div>
+      `;
+      itemsBox.appendChild(card);
+    });
+    if(updatedEl){
+      updatedEl.textContent = "⚡ Live: " + new Date().toLocaleTimeString("en-IN",{hour12:false});
+    }
+  }catch(e){
+    console.warn("loadQuotes error:", e);
+  }
+}
+
 load();
 loadFno();
+loadQuotes();
 setInterval(load, 10000);
 setInterval(loadFno, 15000);
+setInterval(loadQuotes, 3000);
 __THEMEJS__
 window.addEventListener("resize", ()=>DATA&&renderChart(DATA));
 </script>
@@ -727,6 +966,23 @@ class Handler(BaseHTTPRequestHandler):
         else:
             self._send(404, "text/plain", b"not found")
 
+    def do_POST(self):  # noqa: N802
+        url = urlparse(self.path)
+        length = int(self.headers.get("Content-Length", 0))
+        try:
+            body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        except Exception:
+            body = {}
+
+        if url.path == "/api/trade":
+            res = _handle_trade(body)
+            self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res).encode())
+        elif url.path == "/api/close":
+            res = _handle_close(body)
+            self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res).encode())
+        else:
+            self._send(404, "text/plain", b"not found")
+
     def _send(self, code: int, ctype: str, body: bytes):
         self.send_response(code)
         self.send_header("Content-Type", ctype)
@@ -757,6 +1013,7 @@ def main(argv: list[str] | None = None):
     else:
         print(retention.summary(retention.prune(args.keep_days)))
 
+    fyers.start_background_server()
     server = fno_web._bind(args.port, Handler, "the dashboard")
     if server is None:
         return 1

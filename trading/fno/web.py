@@ -17,11 +17,12 @@ import json
 import sys
 import threading
 from datetime import datetime
-from http.server import BaseHTTPRequestHandler, HTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
 from trading import ui_theme
 from trading.fno import config as C
+from trading.fno import fyers
 from trading.fno import report
 from trading.fno.data import LiveFeed, ReplayFeed
 from trading.fno.models import IST
@@ -111,13 +112,17 @@ class ScanCache:
         if self.replay:
             feed = ReplayFeed(self.replay)
             now, allow_delayed = feed.as_of, True
-        elif self.fyers:
-            from trading.fno.fyers import FyersFeed
-            feed = FyersFeed(base=self.fyers_base)
-            now, allow_delayed = datetime.now(IST), True
         else:
-            feed = LiveFeed()
-            now, allow_delayed = datetime.now(IST), self.allow_delayed
+            from trading.fno.fyers import load_token, FyersFeed, FyersClient
+            token, _ = load_token()
+            client = FyersClient(base=self.fyers_base)
+            is_connected, _ = client.status()
+            if self.fyers or token is not None or is_connected:
+                feed = FyersFeed(base=self.fyers_base)
+                now, allow_delayed = datetime.now(IST), True
+            else:
+                feed = LiveFeed()
+                now, allow_delayed = datetime.now(IST), self.allow_delayed
         res = Scanner(feed, now, allow_delayed=allow_delayed,
                       symbols=self.symbols, shortlist=self.shortlist).run()
         return report.as_dict(res)
@@ -147,6 +152,71 @@ def serve(path: str, query: dict | None = None, *,
         refresh = query.get("refresh", ["0"])[0] == "1"
         body = json.dumps(CACHE.snapshot(refresh=refresh), default=str).encode()
         return 200, "application/json", body
+    if path in ("/api/quotes", "/api/fyers/quotes"):
+        from trading.fno.fyers import FyersClient
+        client = FyersClient()
+        syms_param = query.get("symbols", [None])[0]
+        if syms_param:
+            syms = [s.strip() for s in syms_param.split(",") if s.strip()]
+        else:
+            default_syms = [
+                "NSE:NIFTY50-INDEX", "NSE:NIFTYBANK-INDEX", "NSE:RELIANCE-EQ",
+                "NSE:INFY-EQ", "NSE:TCS-EQ", "NSE:HDFCBANK-EQ", "NSE:ICICIBANK-EQ",
+                "NSE:SBIN-EQ", "NSE:BHARTIARTL-EQ", "NSE:ITC-EQ"
+            ]
+            cand_syms = []
+            if CACHE._scan and CACHE._scan.get("candidates"):
+                for c in CACHE._scan["candidates"][:15]:
+                    s_name = f"NSE:{c['symbol']}-EQ"
+                    if s_name not in default_syms and s_name not in cand_syms:
+                        cand_syms.append(s_name)
+            syms = default_syms + cand_syms
+        quotes = client.quotes(syms)
+        return 200, "application/json", json.dumps({"ok": True, "quotes": quotes}, default=str).encode()
+    if path == "/api/fyers/status":
+        from trading.fno.fyers import FyersClient, get_auth_link, FYERS_APP_ID
+        client = FyersClient()
+        connected, note = client.status()
+        prof = {}
+        try:
+            p = client._get("/api/fyers/status")
+            if p.get("profile"):
+                prof = p.get("profile")
+        except Exception:
+            pass
+        res = {
+            "connected": connected,
+            "profile": prof or ({"name": "SHUBHAM NARAYAN PANCHAL"} if connected else {}),
+            "auth_url": get_auth_link(),
+            "app_id": FYERS_APP_ID,
+            "note": note,
+        }
+        return 200, "application/json", json.dumps(res, default=str).encode()
+    if path == "/api/fyers/login":
+        from trading.fno.fyers import get_auth_link
+        auth_link = get_auth_link()
+        html = f"""<!doctype html><html><head><meta http-equiv="refresh" content="0; url={auth_link}"></head><body>Redirecting to Fyers login...</body></html>"""
+        return 200, "text/html; charset=utf-8", html.encode()
+    if path == "/api/fyers/callback":
+        from trading.fno.fyers import exchange_token
+        auth_code = query.get("auth_code", [None])[0]
+        if not auth_code:
+            return 400, "text/html; charset=utf-8", b"<h3>Error: No auth_code received from Fyers.</h3>"
+        try:
+            data = exchange_token(auth_code)
+            name = (data.get("profile") or {}).get("name") or "Trader"
+            html = f"""<!doctype html>
+<html><head><title>Fyers Connected</title>
+<style>body{{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e6edf3;display:flex;justify-content:center;align-items:center;height:100vh;margin:0;}}
+.card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;text-align:center;max-width:440px;box-shadow:0 8px 24px rgba(0,0,0,0.4);}}
+h2{{color:#3fb950;margin-top:0;}}
+a{{display:inline-block;margin-top:20px;background:#238636;color:#fff;text-decoration:none;padding:10px 20px;border-radius:6px;font-weight:600;}}</style>
+</head><body><div class="card"><h2>&#10003; Fyers API Connected!</h2>
+<p>Welcome, <b>{name}</b>. Zero-delay real-time market data is now active.</p>
+<a href="/">Open Dashboard</a></div></body></html>"""
+            return 200, "text/html; charset=utf-8", html.encode()
+        except Exception as exc:
+            return 500, "text/html; charset=utf-8", f"<h3>Failed to exchange token: {exc}</h3>".encode()
     return None
 
 
@@ -366,6 +436,19 @@ td.blk{white-space:normal;min-width:220px}
 
 __TOPBAR__
 
+  <section class="panel" id="liveTickerPanel" style="margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:8px 13px;background:var(--cell);border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center;gap:8px;font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase">
+        <span class="led" style="background:var(--good);box-shadow:0 0 8px var(--good)"></span>
+        <span style="color:var(--ink)">Live Market Rates <span style="font-weight:400;color:var(--ink-3)">(Fyers Zero-Delay Stream)</span></span>
+      </div>
+      <div style="font-size:11px;color:var(--ink-3);font-family:ui-monospace,monospace" id="liveTickerUpdated">Syncing live stream…</div>
+    </div>
+    <div id="liveTickerItems" style="display:flex;gap:10px;padding:10px 13px;overflow-x:auto;align-items:stretch">
+      <span class="muted" style="font-size:11.5px">Loading live market quotes…</span>
+    </div>
+  </section>
+
   <div id="banner"></div>
   <div class="kpis" id="kpis"></div>
 
@@ -453,6 +536,10 @@ function render(){
   else if(STATE.error) banner("Last refresh failed — showing the previous scan", STATE.error);
 
   kpis(s); nifty(s); sectors(s); feeds(s); notes(s); counts(s); list(s); table(s);
+  if(window.ScannerAlerts){
+    (s.picks||[]).forEach(p => window.ScannerAlerts.checkAndAlert(p, "BUY"));
+    (s.candidates||[]).filter(c=>c.verdict==="WATCH").forEach(c => window.ScannerAlerts.checkAndAlert(c, "WATCH"));
+  }
 }
 
 __NIFTYJS__
@@ -508,8 +595,8 @@ function kpis(s){
     : m.nifty_above_vwap ? "NIFTY above VWAP" : "NIFTY below VWAP"));
   k.append(mk);
 
-  k.append(kpi("NIFTY 50", pc(m.nifty_pct), sgn(m.nifty_pct)));
-  k.append(kpi("Bank Nifty", pc(m.banknifty_pct), sgn(m.banknifty_pct)));
+  k.append(kpi("NIFTY 50", pc(m.nifty_pct), sgn(m.nifty_pct), "kpi-nifty"));
+  k.append(kpi("Bank Nifty", pc(m.banknifty_pct), sgn(m.banknifty_pct), "kpi-banknifty"));
 
   const br = el("div","kpi");
   br.append(el("div","k","Breadth"));
@@ -525,10 +612,12 @@ function kpis(s){
     ? m.advances+" up / "+m.declines+" down" : m.breadth_source));
   k.append(br);
 }
-function kpi(label, value, cls){
+function kpi(label, value, cls, id){
   const t = el("div","kpi");
   t.append(el("div","k",label));
-  t.append(el("div","v mono "+(cls||""),value));
+  const v = el("div","v mono "+(cls||""),value);
+  if(id) v.id = id;
+  t.append(v);
   return t;
 }
 function badge(text, cls, glyph){
@@ -613,6 +702,7 @@ function list(s){
 function card(c){
   const v = c.verdict.toLowerCase();
   const box = el("article","card v-"+v);
+  box.dataset.cardSym = c.symbol;
 
   const hd = el("div","hd");
   const idw = el("div","idw");
@@ -645,7 +735,52 @@ function card(c){
   m.append(r);
   const t = el("div","t"), f = el("div","f");
   f.style.width = Math.max(0,Math.min(100,c.score))+"%";
-  t.append(f); m.append(t); vw.append(m);
+  t.append(f); m.append(t);
+
+  const tBtn = el("button","btn go","⚡ Take Trade");
+  tBtn.style.fontSize = "11px";
+  tBtn.style.padding = "3px 9px";
+  tBtn.style.marginTop = "5px";
+  tBtn.onclick = async (e)=>{
+    e.stopPropagation();
+    tBtn.disabled = true;
+    tBtn.textContent = "Placing…";
+    try{
+      const entryPx = c.price || (c.trade ? c.trade.entry : 0);
+      const slPx = c.trade ? c.trade.stop : (entryPx * 0.99);
+      const tgtPx = c.trade ? (c.trade.target1 || c.trade.target) : (entryPx * 1.02);
+      const res = await fetch("/api/trade", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          symbol: c.symbol,
+          side: "BUY",
+          qty: 15,
+          price: entryPx,
+          stop_loss: slPx,
+          target: tgtPx,
+          strategy_id: "fno_scanner"
+        })
+      });
+      const j = await res.json();
+      if(j.ok){
+        tBtn.style.background = "var(--good)";
+        tBtn.textContent = "✓ Trade #" + j.trade_id + " Placed!";
+        setTimeout(()=>{ tBtn.textContent="⚡ Take Trade"; tBtn.disabled=false; tBtn.style.background=""; }, 2000);
+      } else {
+        alert("Trade rejected: " + (j.reason || j.error || "Unknown"));
+        tBtn.disabled = false;
+        tBtn.textContent = "⚡ Take Trade";
+      }
+    }catch(err){
+      alert("Error: " + err);
+      tBtn.disabled = false;
+      tBtn.textContent = "⚡ Take Trade";
+    }
+  };
+  m.append(tBtn);
+
+  vw.append(m);
   hd.append(vw);
   box.append(hd);
 
@@ -944,6 +1079,7 @@ function table(s){
   }
   rows.forEach(c=>{
     const tr=el("tr");
+    tr.dataset.rowSym = c.symbol;
     tr.append(el("td","sym",c.symbol));
     const v=el("td"); v.append(badge(c.verdict,"sm v-"+c.verdict.toLowerCase()));
     tr.append(v);
@@ -979,6 +1115,86 @@ if(document.body.dataset.mode === "standalone"){
 }
 
 load(false);
+
+async function loadQuotes(){
+  try{
+    const r = await fetch("/api/quotes", {cache:"no-store"});
+    if(!r.ok) return;
+    const res = await r.json();
+    const itemsBox = document.getElementById("liveTickerItems");
+    const updatedEl = document.getElementById("liveTickerUpdated");
+    if(itemsBox && res.quotes && res.quotes.length){
+      itemsBox.innerHTML = "";
+      res.quotes.forEach(q => {
+        const v = q.v || {};
+        const rawName = (v.short_name || q.n || "").replace("-INDEX","").replace("-EQ","").replace("NSE:","");
+        const lp = v.lp || 0;
+        const ch = v.ch || 0;
+        const chp = v.chp || 0;
+        const isUp = ch >= 0;
+        const card = el("div", "ticker-item");
+        card.style.cssText = "background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:7px 11px;min-width:142px;flex:0 0 auto;display:flex;flex-direction:column;gap:3px;box-shadow:var(--shadow)";
+        card.innerHTML = `
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+            <span style="font-weight:700;font-size:11px;letter-spacing:.04em;color:var(--ink)">${rawName}</span>
+            <span class="badge sm ${isUp ? 'bull' : 'bear'}" style="font-size:9.5px;padding:1px 5px">${chp >= 0 ? '+' : ''}${chp.toFixed(2)}%</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:2px">
+            <span style="font-size:14px;font-weight:700;font-family:ui-monospace,monospace;color:${isUp ? 'var(--up)' : 'var(--down)'}">₹${num(lp)}</span>
+            <span style="font-size:10px;color:var(--ink-3);font-family:ui-monospace,monospace">${ch >= 0 ? '+' : ''}${num(ch)}</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--ink-3);margin-top:1px">
+            <span>H: ${num(v.high_price)}</span>
+            <span>L: ${num(v.low_price)}</span>
+          </div>
+        `;
+        itemsBox.appendChild(card);
+
+        // Update candidate cards on page
+        const sym = (v.symbol || q.n || "").replace("NSE:","").replace("-EQ","").replace("-INDEX","");
+        const cardEl = document.querySelector(`[data-card-sym="${sym}"]`);
+        if(cardEl && v.lp){
+          const pxEl = cardEl.querySelector(".pxw .px");
+          const chgEl = cardEl.querySelector(".pxw .chg");
+          if(pxEl) pxEl.textContent = "₹" + num(v.lp);
+          if(chgEl && v.chp != null){
+            chgEl.className = "chg mono " + (v.chp > 0 ? "up" : v.chp < 0 ? "down" : "");
+            chgEl.textContent = (v.chp >= 0 ? "+" : "") + v.chp.toFixed(2) + "%";
+          }
+        }
+      });
+      if(updatedEl){
+        updatedEl.textContent = "⚡ Live: " + new Date().toLocaleTimeString("en-IN",{hour12:false});
+      }
+    }
+
+    if(res.quotes){
+      const nq = res.quotes.find(q => (q.n||"").includes("NIFTY50"));
+      const bq = res.quotes.find(q => (q.n||"").includes("NIFTYBANK"));
+      if(nq && nq.v){
+        const elN = document.getElementById("kpi-nifty");
+        if(elN){
+          elN.innerHTML = `<span style="font-size:17px;font-weight:700;font-family:ui-monospace,monospace;color:${nq.v.ch>=0?'var(--up)':'var(--down)'}">₹${num(nq.v.lp)}</span> <span style="font-size:11px;font-weight:600;color:${nq.v.ch>=0?'var(--up)':'var(--down)'}">(${nq.v.chp>=0?'+':''}${nq.v.chp.toFixed(2)}%)</span>`;
+        }
+        const spotEl = document.querySelector("#niftyWrap .nfx .spot");
+        if(spotEl && nq.v.lp){
+          spotEl.textContent = num(nq.v.lp);
+        }
+      }
+      if(bq && bq.v){
+        const elB = document.getElementById("kpi-banknifty");
+        if(elB){
+          elB.innerHTML = `<span style="font-size:17px;font-weight:700;font-family:ui-monospace,monospace;color:${bq.v.ch>=0?'var(--up)':'var(--down)'}">₹${num(bq.v.lp)}</span> <span style="font-size:11px;font-weight:600;color:${bq.v.ch>=0?'var(--up)':'var(--down)'}">(${bq.v.chp>=0?'+':''}${bq.v.chp.toFixed(2)}%)</span>`;
+        }
+      }
+    }
+  }catch(e){
+    console.warn("loadQuotes error:", e);
+  }
+}
+
+loadQuotes();
+setInterval(loadQuotes, 3000);
 __THEMEJS__
 </script>
 </body></html>
@@ -1016,10 +1232,10 @@ def _serve_forever(server, url: str) -> int:
 
 def _bind(port: int, handler, what: str):
     """Bind, or explain who already has the port."""
-    from http.server import HTTPServer
+    from http.server import ThreadingHTTPServer
 
     try:
-        return HTTPServer(("127.0.0.1", port), handler)
+        return ThreadingHTTPServer(("127.0.0.1", port), handler)
     except OSError as exc:
         if getattr(exc, "errno", None) not in (48, 98):      # EADDRINUSE
             raise
@@ -1052,6 +1268,7 @@ def main(argv: list[str] | None = None) -> int:
                          "without --allow-delayed)")
     args = ap.parse_args(argv)
 
+    fyers.start_background_server()
     server = _bind(args.port, Handler, "the scanner")
     if server is None:
         return 1

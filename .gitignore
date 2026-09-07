@@ -8,6 +8,7 @@ __pycache__/
 # re-included: git cannot un-ignore a file inside an ignored *directory*.
 data/*
 logs/
+*.log
 
 # ...except the replay bundles. These are generated, synthetic candles with no
 # real positions or credentials, and trading/test_fno.py loads one of them — a
@@ -18,3 +19,4 @@ data/fno/*
 
 # macOS
 .DS_Store
+

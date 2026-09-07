@@ -101,7 +101,8 @@ class ExecutionRouter:
         if self.ledger.day_realized_pnl() <= DAILY_LOSS_LIMIT:
             return "daily_loss_limit_hit"
 
-        open_positions = self.ledger.open_trades()
+        today = datetime.now(IST).strftime("%Y-%m-%d")
+        open_positions = [t for t in self.ledger.open_trades() if t.get("date") == today]
         if (len(open_positions) >= MAX_OPEN_POSITIONS
                 and signal["symbol"] not in {t["symbol"] for t in open_positions}):
             return f"max_open_positions ({len(open_positions)}/{MAX_OPEN_POSITIONS})"

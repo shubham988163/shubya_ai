@@ -43,8 +43,14 @@ RETENTION_DAYS = 5
 
 DB_PATH = PROJECT_ROOT / "data" / "ledger.db"
 TODAY_CONFIG_PATH = PROJECT_ROOT / "data" / "today_config.json"
+FYERS_TOKEN_PATH = PROJECT_ROOT / "data" / "fyers_token.json"
 REPORTS_DIR = PROJECT_ROOT / "reports"
 LOGS_DIR = PROJECT_ROOT / "logs"
+
+# --- Fyers API v3 (Real-time live market feed) ---
+FYERS_APP_ID = "J8ZMHWBTBW-100"
+FYERS_SECRET_ID = "KLFH4NCSIV"
+FYERS_REDIRECT_URI = "http://localhost:3001/api/fyers/callback"
 
 # --- Strategy: EMA crossover ---
 FAST_EMA = 9
