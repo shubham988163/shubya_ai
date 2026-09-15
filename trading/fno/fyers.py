@@ -45,9 +45,20 @@ class FyersError(RuntimeError):
     pass
 
 
+def _sdk_module():
+    """Import the Fyers SDK or raise a friendly install error."""
+    try:
+        from fyers_apiv3 import fyersModel
+        return fyersModel
+    except ModuleNotFoundError as exc:
+        raise FyersError(
+            "Fyers SDK is not installed. Run: python -m pip install fyers-apiv3"
+        ) from exc
+
+
 def get_auth_link(redirect_uri: str = FYERS_REDIRECT_URI) -> str:
     """Generate the Fyers OAuth login URL."""
-    from fyers_apiv3 import fyersModel
+    fyersModel = _sdk_module()
 
     session = fyersModel.SessionModel(
         client_id=FYERS_APP_ID,
@@ -61,7 +72,7 @@ def get_auth_link(redirect_uri: str = FYERS_REDIRECT_URI) -> str:
 
 def exchange_token(auth_code: str, redirect_uri: str = FYERS_REDIRECT_URI) -> dict:
     """Exchange authorization code for an access token and persist to disk."""
-    from fyers_apiv3 import fyersModel
+    fyersModel = _sdk_module()
 
     session = fyersModel.SessionModel(
         client_id=FYERS_APP_ID,
@@ -127,7 +138,7 @@ class FyersClient:
         token, _ = load_token()
         if not token:
             return None
-        from fyers_apiv3 import fyersModel
+        fyersModel = _sdk_module()
         return fyersModel.FyersModel(
             client_id=FYERS_APP_ID,
             token=token,
@@ -166,11 +177,18 @@ class FyersClient:
                 return True, f"Fyers live ({prof})"
             if data.get("expired"):
                 return False, "Fyers token expired — please re-authenticate"
+            if isinstance(data, dict) and data.get("connected") is False:
+                return False, "Fyers not connected — please re-authenticate"
+        except FyersError as exc:
+            return False, str(exc)
         except Exception:
-            pass
+            return False, f"Fyers not connected — cannot reach the Fyers server at {self.base}"
 
-        auth_url = get_auth_link()
-        return False, f"Fyers not connected — click to connect: {auth_url}"
+        try:
+            auth_url = get_auth_link()
+            return False, f"Fyers not connected — click to connect: {auth_url}"
+        except FyersError as exc:
+            return False, str(exc)
 
     def history(self, symbol: str, resolution: str = "5", days: int = 5) -> list[dict]:
         """Fetch historical candles."""

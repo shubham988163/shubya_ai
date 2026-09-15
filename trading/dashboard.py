@@ -113,6 +113,18 @@ def _handle_trade(data: dict) -> dict:
     return {"ok": True, "trade_id": trade_id, "signal": signal}
 
 
+def _handle_telegram_alert(data: dict) -> dict:
+    """Send a Telegram notification for scanner alerts."""
+    try:
+        from trading.notify import notify
+        title = data.get("title", "F&O Alert")
+        message = data.get("message", "")
+        notify(title, message)
+        return {"ok": True}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def _handle_close(data: dict) -> dict:
     ledger = Ledger()
     trade_id = int(data.get("trade_id", 0))
@@ -264,6 +276,39 @@ pre.report{white-space:pre-wrap;font:12.5px/1.6 ui-sans-serif,system-ui,sans-ser
 .pnl-pos{color:var(--up)} .pnl-neg{color:var(--down)}
 .small{font-size:11.5px;color:var(--ink-2)}
 .overflow{overflow-x:auto}
+
+/* --- trading desk composition --- */
+.desk-kicker{display:flex;align-items:center;gap:8px;margin:18px 0 0;color:var(--ink-3);
+  font-size:10px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+.desk-kicker::before{content:"";width:22px;height:1px;background:var(--accent)}
+.market-grid{display:grid;grid-template-columns:minmax(0,1.65fr) minmax(320px,1fr);gap:14px;margin-top:14px;align-items:start}
+.market-grid #niftyWrap{display:grid;gap:14px;align-content:start}
+.market-grid #buynow{margin-top:0}
+.market-grid #niftyWrap .panel{margin-top:0}
+.overview-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(260px,.7fr);gap:14px;margin-top:14px}
+.overview-grid .panel{margin-top:0}
+.overview-grid .kpis{margin-top:0;grid-template-columns:repeat(2,minmax(0,1fr));align-content:start}
+.overview-grid .kpi:first-child{grid-column:1 / -1;background:linear-gradient(135deg,var(--card),var(--accent-soft));border-color:color-mix(in srgb,var(--accent) 35%,var(--line))}
+.overview-grid .kpi:first-child .v{font-size:32px}
+.session-panel{height:100%}
+.session-panel .body{height:calc(100% - 37px);display:flex;align-items:center}
+.reports-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.reports-grid .panel{margin-top:0}
+.lower-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:14px}
+.lower-grid .panel{margin-top:0}
+@media (max-width:900px){
+  .market-grid,.overview-grid,.reports-grid,.lower-grid{grid-template-columns:1fr}
+  .overview-grid .kpis{grid-template-columns:repeat(4,minmax(120px,1fr))}
+  .overview-grid .kpi:first-child{grid-column:auto}
+}
+@media (max-width:620px){
+  .wrap{padding:0 10px 36px}
+  .top{margin:0 -10px;padding:9px 10px;gap:9px}
+  .nav{order:5;width:100%}.nav a{flex:1;text-align:center}
+  .overview-grid .kpis{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .kpi .v.hero{font-size:30px}
+  .market-grid{gap:10px}.reports-grid,.lower-grid{gap:10px}
+}
 </style></head>
 <body>
 <div class="wrap">
@@ -282,40 +327,44 @@ __TOPBAR__
     </div>
   </section>
 
-  <section class="panel" id="buynow">
-    <h2>Buy now <span class="sub" id="bnMeta">— checking the F&amp;O scanner…</span></h2>
-    <div class="body" id="bnBody"></div>
-  </section>
+  <div class="desk-kicker">Market command center <span class="muted">/ India cash &amp; F&amp;O</span></div>
+  <div class="market-grid">
+    <section class="panel" id="buynow">
+      <h2>Primary setup <span class="sub" id="bnMeta">— checking the F&amp;O scanner…</span></h2>
+      <div class="body" id="bnBody"></div>
+    </section>
+    <div id="niftyWrap"></div>
+  </div>
 
-  <div id="niftyWrap"></div>
+  <div class="overview-grid">
+    <div class="kpis" id="tiles"></div>
+    <section class="panel session-panel">
+      <h2>Session controls <span class="sub">risk &amp; state</span></h2>
+      <div class="body"><div class="cfg" id="cfg"></div></div>
+    </section>
+  </div>
 
-  <div class="kpis" id="tiles"></div>
-
-  <section class="panel">
-    <h2>Cumulative net P&amp;L <span class="sub">closed trades through the selected session</span></h2>
+  <section class="panel" style="margin-top:14px">
+    <h2>Equity curve <span class="sub">cumulative net P&amp;L · closed trades through selected session</span></h2>
     <div class="body" id="chartwrap">
       <svg id="chart" width="100%" height="240" role="img"
-           aria-label="Cumulative net P&L line chart; values also in the trades table below"></svg>
+           aria-label="Cumulative net P&amp;L line chart; values also in the trades table below"></svg>
       <div id="tooltip"></div>
     </div>
   </section>
 
-  <section class="panel">
-    <h2>Buy vs Sell <span class="sub">selected session</span></h2>
-    <div class="scroll"><table id="sides"></table></div>
-  </section>
+  <div class="reports-grid">
+    <section class="panel">
+      <h2>Buy vs Sell <span class="sub">selected session</span></h2>
+      <div class="scroll"><table id="sides"></table></div>
+    </section>
+    <section class="panel">
+      <h2>By strategy <span class="sub">selected session</span></h2>
+      <div class="scroll"><table id="strats"></table></div>
+    </section>
+  </div>
 
-  <section class="panel">
-    <h2>By strategy <span class="sub">selected session</span></h2>
-    <div class="scroll"><table id="strats"></table></div>
-  </section>
-
-  <section class="panel">
-    <h2>Pre-market agent <span class="sub">today's config</span></h2>
-    <div class="body"><div class="cfg" id="cfg"></div></div>
-  </section>
-
-  <section class="panel">
+  <section class="panel" style="margin-top:14px">
     <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line);background:var(--cell)">
       <h2 style="border-bottom:none;padding:0;background:none;margin:0">Trades <span class="sub">with the supervisor's verdict</span></h2>
       <button class="btn go" id="btnNewTrade" style="font-size:11.5px;padding:4px 10px">+ Take Paper Trade</button>
@@ -334,17 +383,18 @@ __TOPBAR__
     <div class="scroll"><table id="trades"></table></div>
   </section>
 
-  <section class="panel">
-    <h2>Rejections <span class="sub">risk kernel &amp; rate limiter, last 50</span></h2>
-    <div class="scroll"><table id="rej"></table></div>
-  </section>
+  <div class="lower-grid">
+    <section class="panel">
+      <h2>Risk events <span class="sub">rejections · last 50</span></h2>
+      <div class="scroll"><table id="rej"></table></div>
+    </section>
+    <section class="panel">
+      <h2>Agent audit <span class="sub">LLM calls · last 50</span></h2>
+      <div class="scroll"><table id="alog"></table></div>
+    </section>
+  </div>
 
-  <section class="panel">
-    <h2>LLM audit log <span class="sub">last 50 calls</span></h2>
-    <div class="scroll"><table id="alog"></table></div>
-  </section>
-
-  <section class="panel">
+  <section class="panel" style="margin-top:14px">
     <h2>EOD journal <span class="sub">written by the journal agent</span></h2>
     <div class="body"><pre class="report" id="report"></pre></div>
   </section>
@@ -469,8 +519,10 @@ function renderBuyNow(st){
       g.append(d);};
     cell("Entry zone","₹"+fmt(t.entry_low)+" – "+fmt(t.entry_high),"","buy inside this band");
     cell("Stop loss","₹"+fmt(t.stop),"sl",t.stop_basis);
-    cell("Target 1","₹"+fmt(t.target1),"tg","1:"+t.rr1);
-    cell("Target 2","₹"+fmt(t.target2),"tg","1:"+t.rr2);
+    const t1Note = t.target1_hit ? "✓ ACHIEVED" : "1:"+t.rr1;
+    const t2Note = t.target2_hit ? "✓ ACHIEVED" : "1:"+t.rr2;
+    cell("Target 1","₹"+fmt(t.target1),"tg",t1Note);
+    cell("Target 2","₹"+fmt(t.target2),"tg",t2Note);
     cell("Risk","₹"+fmt(t.risk),"",t.risk_pct.toFixed(2)+"% of price");
     box.append(g);
   }
@@ -980,16 +1032,22 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/close":
             res = _handle_close(body)
             self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res).encode())
+        elif url.path == "/api/telegram-alert":
+            res = _handle_telegram_alert(body)
+            self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res).encode())
         else:
             self._send(404, "text/plain", b"not found")
 
     def _send(self, code: int, ctype: str, body: bytes):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def log_message(self, fmt, *args):  # quiet
         pass

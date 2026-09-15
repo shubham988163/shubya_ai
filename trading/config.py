@@ -2,9 +2,14 @@
 
 All paths are anchored to the project root so cron jobs work regardless of CWD.
 """
+import os
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+# --- Telegram Notifications ---
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8609336942:AAGU7IMNSDcbPTfe4ykhXamnLplZRtwb1OI")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "629517899")
 
 # --- Trading universe ---
 # Core watchlist (used by the pre-market agent's prompt focus).

@@ -173,6 +173,25 @@ def serve(path: str, query: dict | None = None, *,
             syms = default_syms + cand_syms
         quotes = client.quotes(syms)
         return 200, "application/json", json.dumps({"ok": True, "quotes": quotes}, default=str).encode()
+    if path == "/api/candles":
+        from trading.fno.fyers import FyersClient, FyersError
+        symbol = query.get("symbol", [None])[0]
+        resolution = query.get("resolution", ["5"])[0]
+        days = int(query.get("days", ["1"])[0])
+        if not symbol:
+            return 400, "application/json", json.dumps({"ok": False, "error": "symbol required"}).encode()
+        # Scanner symbols are bare (e.g. "HYUNDAI"); Fyers wants NSE:SYMBOL-EQ.
+        fyer_sym = symbol
+        if ":" not in fyer_sym:
+            fyer_sym = f"NSE:{symbol}-EQ"
+        try:
+            client = FyersClient()
+            candles = client.history(fyer_sym, resolution, days)
+            return 200, "application/json", json.dumps({"ok": True, "symbol": fyer_sym,
+                                                        "candles": candles}, default=str).encode()
+        except FyersError as exc:
+            return 200, "application/json", json.dumps({"ok": False, "symbol": fyer_sym,
+                                                        "error": str(exc), "candles": []}, default=str).encode()
     if path == "/api/fyers/status":
         from trading.fno.fyers import FyersClient, get_auth_link, FYERS_APP_ID
         client = FyersClient()
@@ -229,12 +248,15 @@ class Handler(BaseHTTPRequestHandler):
         self._send(*result)
 
     def _send(self, code: int, ctype: str, body: bytes):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def log_message(self, fmt, *args):   # quiet
         pass
@@ -257,7 +279,9 @@ __THEME__
 /* ---------- layout ---------- */
 .grid{display:grid;grid-template-columns:minmax(0,1fr) 288px;gap:14px;margin-top:14px;
   align-items:start}
+#list{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;align-items:start}
 @media (max-width:1080px){.grid{grid-template-columns:1fr}}
+@media (max-width:760px){#list{grid-template-columns:1fr}}
 .rail{display:grid;gap:12px;position:sticky;top:64px}
 @media (max-width:1080px){.rail{position:static}}
 .panel{background:var(--card);border:1px solid var(--line);border-radius:11px;
@@ -269,14 +293,20 @@ __THEME__
 
 /* ---------- candidate card ---------- */
 .card{position:relative;background:var(--card);border:1px solid var(--line);
-  border-radius:12px;box-shadow:var(--shadow);margin-bottom:12px;overflow:hidden}
+  border-radius:14px;box-shadow:0 0 0 1px rgba(47,159,219,.04),0 14px 34px rgba(0,0,0,.35);
+  margin:0;overflow:hidden;background:linear-gradient(145deg,var(--card),color-mix(in srgb,var(--bg-2) 78%,var(--card)))}
 .card::before{content:"";position:absolute;left:0;top:0;bottom:0;width:3px;background:var(--ink-3)}
 .card.v-buy::before{background:var(--good)}
 .card.v-watch::before{background:var(--warn)}
 .card.v-avoid::before{background:var(--line-2)}
-.card .hd{display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap;
-  padding:12px 14px 11px 16px;border-bottom:1px solid var(--line)}
-.idw{min-width:0;flex:1 1 220px}
+.card .hd{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:12px;align-items:start;
+  padding:15px 15px 11px 16px;border-bottom:1px solid var(--line)}
+.signal-mark{width:42px;height:42px;flex:none;border-radius:12px;display:grid;place-items:center;
+  font-size:24px;font-weight:700;background:var(--bad-soft);color:var(--bad);
+  border:1px solid color-mix(in srgb,var(--bad) 55%,var(--line));box-shadow:0 0 18px color-mix(in srgb,var(--bad) 18%,transparent)}
+.card.v-buy .signal-mark{background:var(--good-soft);color:var(--good);border-color:color-mix(in srgb,var(--good) 55%,var(--line));
+  box-shadow:0 0 18px color-mix(in srgb,var(--good) 18%,transparent)}
+.idw{min-width:0}
 .idw .row1{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
 .rank{font-size:10px;font-weight:700;color:var(--ink-3);letter-spacing:.08em}
 .sym{font-size:17px;font-weight:700;letter-spacing:-.01em}
@@ -285,10 +315,10 @@ __THEME__
   white-space:nowrap}
 .status{font-size:11px;color:var(--ink-2);margin-top:5px}
 .status .dotsep{color:var(--ink-3);margin:0 6px}
-.pxw{text-align:right;flex:0 0 auto}
+.pxw{text-align:right;min-width:84px}
 .pxw .px{font-size:20px;font-weight:650}
 .pxw .chg{font-size:12px;font-weight:600;margin-top:1px}
-.vw{flex:0 0 176px;display:flex;flex-direction:column;align-items:flex-end;gap:7px}
+.vw{grid-column:1 / -1;display:flex;flex-direction:row;align-items:center;justify-content:space-between;gap:10px}
 
 /* Verdict badge: glyph + word do the work; the tint only reinforces them. */
 .badge{display:inline-flex;align-items:center;gap:6px;border-radius:7px;padding:5px 11px;
@@ -311,11 +341,16 @@ __THEME__
   letter-spacing:.07em;text-transform:uppercase}
 .meter .t{height:5px;border-radius:999px;background:var(--track);margin-top:4px;overflow:hidden}
 .meter .f{height:100%;border-radius:999px;background:var(--accent)}
+.confidence{margin:0 15px 0 16px;padding:10px 12px;border:1px solid var(--line);
+  border-radius:9px;background:color-mix(in srgb,var(--cell) 82%,transparent)}
+.confidence .meter{width:100%}
+.confidence .meter .t{height:7px;margin-top:7px}
+.confidence .meter .r{font-size:10px}
 
 /* ---------- charts row ---------- */
-.charts{display:grid;grid-template-columns:minmax(0,300px) minmax(0,1fr);gap:16px;
+.charts{display:grid;grid-template-columns:1fr;gap:12px;
   padding:13px 14px 4px 16px;align-items:center}
-@media (max-width:760px){.charts{grid-template-columns:1fr}}
+.charts > div + div{border-top:1px solid var(--line);padding-top:11px}
 .spark{position:relative}
 .spark svg{display:block;width:100%;height:58px}
 .spark .end{position:absolute;width:7px;height:7px;border-radius:50%;background:var(--accent);
@@ -323,36 +358,63 @@ __THEME__
 .cap{font-size:9.5px;letter-spacing:.10em;text-transform:uppercase;color:var(--ink-3);
   margin-bottom:5px}
 
-/* Price-vs-levels ladder — positioned HTML, so circles stay circles. */
-.lad{position:relative;height:32px}
-.lad .bar{position:absolute;left:0;right:0;top:13px;height:6px;border-radius:999px;
-  background:var(--track)}
-.lad .zone{position:absolute;top:13px;height:6px}
+/* Price-vs-levels ladder — readable first, positioned HTML so markers stay sharp. */
+.level-visual{border:1px solid var(--line);border-radius:9px;background:var(--cell);
+  padding:10px 12px 9px}
+.lad{position:relative;height:58px;margin:4px 4px 0}
+.lad .bar{position:absolute;left:0;right:0;top:27px;height:10px;border-radius:999px;
+  background:var(--track);box-shadow:inset 0 1px 2px rgba(0,0,0,.16)}
+.lad .zone{position:absolute;top:27px;height:10px}
 .lad .zone.risk{background:var(--bad-soft)}
 .lad .zone.rew{background:var(--good-soft)}
-.lad .zone.entry{top:11px;height:10px;border-radius:2px;background:var(--accent);opacity:.32}
-.lad .rule{position:absolute;top:5px;width:2px;height:22px;margin-left:-1px}
-.lad .cap-sq{position:absolute;left:-3px;bottom:-6px;width:8px;height:6px;background:currentColor}
-.lad .cap-tri{position:absolute;left:-4px;top:-7px;width:0;height:0;
+.lad .zone.entry{top:24px;height:16px;border-radius:4px;background:var(--accent);opacity:.35;
+  box-shadow:0 0 0 1px color-mix(in srgb,var(--accent) 45%,transparent)}
+.lad .rule{position:absolute;top:17px;width:2px;height:30px;margin-left:-1px;z-index:2}
+.lad .rule .label{position:absolute;bottom:33px;left:50%;transform:translateX(-50%);white-space:nowrap;
+  font-size:9px;font-weight:700;letter-spacing:.04em;color:currentColor;text-transform:uppercase}
+.lad .rule .label.below{top:33px;bottom:auto}
+.lad .cap-sq{position:absolute;left:-4px;bottom:-5px;width:10px;height:8px;background:currentColor}
+.lad .cap-tri{position:absolute;left:-5px;top:-8px;width:0;height:0;
   border-left:5px solid transparent;border-right:5px solid transparent;
   border-bottom:7px solid currentColor}
-.lad .dot{position:absolute;top:10px;width:12px;height:12px;margin-left:-6px;border-radius:50%;
-  background:var(--accent);box-shadow:0 0 0 2px var(--card)}
-.lgnd{display:flex;flex-wrap:wrap;gap:4px 13px;font-size:10.5px;color:var(--ink-2);margin-top:6px}
+.lad .dot{position:absolute;top:23px;width:18px;height:18px;margin-left:-9px;border-radius:50%;z-index:4;
+  background:var(--accent);border:3px solid var(--card);box-shadow:0 0 0 1px var(--accent),0 0 0 5px var(--accent-soft);
+  animation:pricePulse 1.8s ease-in-out infinite}
+.lad .dot::after{content:"NOW";position:absolute;left:50%;bottom:23px;transform:translateX(-50%);
+  color:var(--accent);font-size:9px;font-weight:800;letter-spacing:.08em}
+@keyframes pricePulse{50%{box-shadow:0 0 0 1px var(--accent),0 0 0 9px color-mix(in srgb,var(--accent) 0%,transparent)}}
+.lad .rule{animation:markerIn .45s ease both}
+@keyframes markerIn{from{opacity:0;transform:scaleY(.4)}to{opacity:1;transform:scaleY(1)}}
+@media (prefers-reduced-motion:reduce){.lad .dot,.lad .rule{animation:none}}
+.level-explain{margin-top:5px;font-size:11px;line-height:1.35;color:var(--ink-2)}
+.level-explain b{color:var(--ink)}
+.lgnd{display:flex;flex-wrap:wrap;gap:5px 8px;font-size:10px;color:var(--ink-2);margin-top:8px}
+.lgnd span{border:1px solid var(--line);border-radius:5px;padding:3px 6px;background:var(--card)}
 .lgnd i{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:5px;
   vertical-align:-1px}
 .lgnd i.rnd{border-radius:50%}
 
 /* ---------- plan ---------- */
-.plan{display:grid;grid-template-columns:repeat(auto-fit,minmax(108px,1fr));gap:1px;
+.plan{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;
   background:var(--line);border-top:1px solid var(--line);border-bottom:1px solid var(--line);
   margin-top:11px}
-.plan .c{background:var(--cell);padding:9px 13px}
+.plan .c{background:var(--cell);padding:9px 11px;min-width:0}
 .plan .c.hl{background:var(--cell-2)}
 .plan .k{font-size:9.5px;letter-spacing:.10em;text-transform:uppercase;color:var(--ink-3)}
-.plan .v{font-size:15px;font-weight:650;margin-top:2px}
+.plan .v{font-size:15px;font-weight:650;margin-top:2px;white-space:nowrap}
 .plan .v.bad{color:var(--bad)} .plan .v.good{color:var(--good)}
 .plan .n{font-size:10px;color:var(--ink-3);margin-top:1px}
+.plan-guide{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:1px;
+  margin-top:1px;background:var(--line);border-bottom:1px solid var(--line)}
+.plan-guide div{background:var(--card);padding:7px 10px;font-size:10.5px;color:var(--ink-2);line-height:1.35}
+.plan-guide b{display:block;color:var(--ink);font-size:10px;letter-spacing:.04em;text-transform:uppercase;margin-bottom:2px}
+@media (max-width:620px){.plan-guide{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media (max-width:620px){.plan{grid-template-columns:repeat(2,minmax(0,1fr))}}
+.trade-footer{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:0 15px 14px 16px;
+  padding-top:11px;border-top:1px solid var(--line);font-size:12px;color:var(--ink-2)}
+.trade-footer b{color:var(--ink);font-size:14px}
+.trade-footer .metric-good{color:var(--good);font-weight:700}
+.trade-footer .trade-copy{font-size:11px;color:var(--ink-3)}
 .noplan{padding:10px 16px;font-size:12px;color:var(--ink-3);border-top:1px solid var(--line)}
 
 /* ---------- options ---------- */
@@ -498,8 +560,10 @@ const sgn = v => v===null||v===undefined ? "" : v>0 ? "up" : v<0 ? "down" : "";
 const sc = v => v%1 ? v.toFixed(1) : v.toFixed(0);
 const GLY = {BUY:"✓", WATCH:"◔", AVOID:"✕", bull:"▲",
              bear:"▼", flat:"—"};
+const isDone = c => (c.trade && (c.trade.target1_hit || c.trade.target2_hit || (c.trade.target1 && c.price >= c.trade.target1))) ||
+                    (c.structure && (c.structure.target1_hit || c.structure.target2_hit || (c.structure.status && c.structure.status.indexOf("TARGET") >= 0)));
 
-let STATE=null, FILTER="all", TIMER=null;
+let STATE=null, FILTER="active", TIMER=null;
 
 async function load(force){
   try{
@@ -560,9 +624,15 @@ function banner(t,d){
 
 function counts(s){
   const all = s.candidates||[];
-  $("#n-all").textContent = all.length || "";
-  ["BUY","WATCH","AVOID"].forEach(v =>
-    $("#n-"+v).textContent = all.filter(c=>c.verdict===v).length || "");
+  const active = all.filter(c => !isDone(c));
+  const done = all.filter(c => isDone(c));
+  const na = $("#n-active"); if(na) na.textContent = active.length || "";
+  const nall = $("#n-all"); if(nall) nall.textContent = all.length || "";
+  const ndone = $("#n-DONE"); if(ndone) ndone.textContent = done.length || "";
+  ["BUY","WATCH","AVOID"].forEach(v => {
+    const el = $("#n-"+v);
+    if(el) el.textContent = all.filter(c => c.verdict===v && (v==="AVOID" ? true : !isDone(c))).length || "";
+  });
 }
 
 /* ---------- KPI strip ---------- */
@@ -685,12 +755,19 @@ function notes(s){
 function list(s){
   const box = $("#list"); box.innerHTML="";
   let items = (s.candidates||[]).slice();
-  if(FILTER!=="all") items = items.filter(c=>c.verdict===FILTER);
+  if(FILTER==="active") items = items.filter(c => !isDone(c));
+  else if(FILTER==="DONE") items = items.filter(c => isDone(c));
+  else if(FILTER==="BUY") items = items.filter(c => c.verdict==="BUY" && !isDone(c));
+  else if(FILTER==="WATCH") items = items.filter(c => c.verdict==="WATCH" && !isDone(c));
+  else if(FILTER!=="all") items = items.filter(c => c.verdict===FILTER);
+
   if(!items.length){
     const p = el("section","panel");
     p.append(el("div","empty", s.data_ok
-      ? (FILTER==="all" ? "No name cleared the liquidity screen this run."
-                        : "Nothing in this view.")
+      ? (FILTER==="active" ? "No active upcoming setups right now. Stocks that completed their targets are in 'Done' or 'All'."
+         : FILTER==="BUY" ? "No qualifying fresh BUY setups right now."
+         : FILTER==="DONE" ? "No setups have completed targets yet."
+         : "Nothing in this view.")
       : "Nothing graded — see the banner above."));
     box.append(p); return;
   }
@@ -705,6 +782,9 @@ function card(c){
   box.dataset.cardSym = c.symbol;
 
   const hd = el("div","hd");
+  const mark = el("div","signal-mark", c.verdict === "BUY" ? "↗" : "↘");
+  mark.setAttribute("aria-label", c.verdict === "BUY" ? "Bullish signal" : "Caution signal");
+  hd.append(mark);
   const idw = el("div","idw");
   const r1 = el("div","row1");
   if(c.rank) r1.append(el("span","rank mono", String(c.rank).padStart(2,"0")));
@@ -732,72 +812,94 @@ function card(c){
   const r = el("div","r");
   r.append(el("span",null,"Score"));
   r.append(el("span","mono", sc(c.score)+"/100 · "+c.grade));
-  m.append(r);
-  const t = el("div","t"), f = el("div","f");
-  f.style.width = Math.max(0,Math.min(100,c.score))+"%";
-  t.append(f); m.append(t);
 
-  const tBtn = el("button","btn go","⚡ Take Trade");
+  const targetHit = c.trade && (c.trade.target1_hit || c.trade.target2_hit || (c.trade.target1 && c.price >= c.trade.target1));
+  const tBtn = el("button","btn go", targetHit ? "✓ Target Done" : "⚡ Take Trade");
   tBtn.style.fontSize = "11px";
   tBtn.style.padding = "3px 9px";
   tBtn.style.marginTop = "5px";
-  tBtn.onclick = async (e)=>{
-    e.stopPropagation();
+  if(targetHit){
     tBtn.disabled = true;
-    tBtn.textContent = "Placing…";
-    try{
-      const entryPx = c.price || (c.trade ? c.trade.entry : 0);
-      const slPx = c.trade ? c.trade.stop : (entryPx * 0.99);
-      const tgtPx = c.trade ? (c.trade.target1 || c.trade.target) : (entryPx * 1.02);
-      const res = await fetch("/api/trade", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          symbol: c.symbol,
-          side: "BUY",
-          qty: 15,
-          price: entryPx,
-          stop_loss: slPx,
-          target: tgtPx,
-          strategy_id: "fno_scanner"
-        })
-      });
-      const j = await res.json();
-      if(j.ok){
-        tBtn.style.background = "var(--good)";
-        tBtn.textContent = "✓ Trade #" + j.trade_id + " Placed!";
-        setTimeout(()=>{ tBtn.textContent="⚡ Take Trade"; tBtn.disabled=false; tBtn.style.background=""; }, 2000);
-      } else {
-        alert("Trade rejected: " + (j.reason || j.error || "Unknown"));
+    tBtn.style.opacity = "0.75";
+    tBtn.style.borderColor = "var(--line-2)";
+    tBtn.style.color = "var(--ink-3)";
+    tBtn.style.background = "var(--cell)";
+    tBtn.title = "Target has already been achieved today for this setup.";
+  } else {
+    tBtn.onclick = async (e)=>{
+      e.stopPropagation();
+      tBtn.disabled = true;
+      tBtn.textContent = "Placing…";
+      try{
+        const entryPx = c.price || (c.trade ? c.trade.entry : 0);
+        const slPx = c.trade ? c.trade.stop : (entryPx * 0.99);
+        const tgtPx = c.trade ? (c.trade.target1 || c.trade.target) : (entryPx * 1.02);
+        const res = await fetch("/api/trade", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            symbol: c.symbol,
+            side: "BUY",
+            qty: 15,
+            price: entryPx,
+            stop_loss: slPx,
+            target: tgtPx,
+            strategy_id: "fno_scanner"
+          })
+        });
+        const j = await res.json();
+        if(j.ok){
+          tBtn.style.background = "var(--good)";
+          tBtn.textContent = "✓ Trade #" + j.trade_id + " Placed!";
+          setTimeout(()=>{ tBtn.textContent="⚡ Take Trade"; tBtn.disabled=false; tBtn.style.background=""; }, 2000);
+        } else {
+          alert("Trade rejected: " + (j.reason || j.error || "Unknown"));
+          tBtn.disabled = false;
+          tBtn.textContent = "⚡ Take Trade";
+        }
+      }catch(err){
+        alert("Error: " + err);
         tBtn.disabled = false;
         tBtn.textContent = "⚡ Take Trade";
       }
-    }catch(err){
-      alert("Error: " + err);
-      tBtn.disabled = false;
-      tBtn.textContent = "⚡ Take Trade";
-    }
-  };
-  m.append(tBtn);
-
-  vw.append(m);
+    };
+  }
+  vw.append(tBtn);
   hd.append(vw);
   box.append(hd);
 
+  const confidence = el("div","confidence");
+  const confidenceMeter = el("div","meter");
+  confidenceMeter.append(r);
+  const confidenceTrack = el("div","t"), confidenceFill = el("div","f");
+  confidenceFill.style.width = Math.max(0,Math.min(100,c.score))+"%";
+  confidenceTrack.append(confidenceFill);
+  confidenceMeter.append(confidenceTrack);
+  confidence.append(confidenceMeter);
+  box.append(confidence);
+
+  const fy = fyersChart(c);
+  if(fy) box.append(fy);
+
   const charts = el("div","charts");
-  const left = el("div");
-  left.append(el("div","cap","Session · 5-min close vs VWAP"));
-  const sp = spark(c);
-  left.append(sp || el("div","cap","no intraday bars"));
-  charts.append(left);
   const right = el("div");
   right.append(el("div","cap","Price against its levels"));
   right.append(ladder(c));
   charts.append(right);
   box.append(charts);
 
-  if(c.trade) box.append(plan(c));
-  else box.append(el("div","noplan","No entry — this setup does not qualify for a "
+  if(c.trade){
+    box.append(plan(c));
+    const footer = el("div","trade-footer");
+    const rr = c.trade.rr1 == null ? "—" : "1 : "+Number(c.trade.rr1).toFixed(1);
+    const copy = el("span","trade-copy");
+    copy.append(document.createTextNode("Risk / Reward  "));
+    copy.append(el("b","mono",rr));
+    copy.append(document.createTextNode("  ·  Risk ₹"+num(c.trade.risk)));
+    footer.append(copy);
+    footer.append(el("span","metric-good",c.trade.rr1 >= 2 ? "quality setup" : "manage risk carefully"));
+    box.append(footer);
+  }else box.append(el("div","noplan","No entry — this setup does not qualify for a "
     + "trade plan. See what is blocking it below."));
 
   if(c.options) box.append(optionsPanel(c));
@@ -937,6 +1039,276 @@ function optionsPanel(c){
   return box;
 }
 
+/* Fyers-powered candlestick chart with entry/stop/target overlays */
+function fyersChart(c) {
+  const trade = c.trade;
+
+  const wrapper = el("div","fyers-chart");
+  wrapper.style.marginTop = "10px";
+
+  const title = el("div","chart-title");
+  title.innerHTML = `<span style="font-size:10px;font-weight:600;text-transform:uppercase;letter-spacing:.08em;color:var(--ink-3)">Fyers Candlestick Chart · 5-min${trade ? " · Entry/Stop/Target Overlays" : ""}</span>`;
+  wrapper.append(title);
+
+  const canvasWrap = el("div","chart-canvas-wrap");
+  canvasWrap.style.position = "relative";
+  canvasWrap.style.marginTop = "8px";
+
+  const canvas = document.createElement("canvas");
+  /* The backing store is sized to the laid-out box x devicePixelRatio inside
+     drawFyersChart, so the candles stay crisp instead of being upscaled. */
+  canvas.style.width = "100%";
+  canvas.style.height = "280px";
+  canvas.style.background = "var(--cell)";
+  canvas.style.borderRadius = "8px";
+  canvas.style.display = "block";
+  canvasWrap.append(canvas);
+  wrapper.append(canvasWrap);
+
+  // Store data for async chart drawing
+  canvas.dataset.symbol = c.symbol;
+  canvas.dataset.entryLow = trade ? trade.entry_low : "";
+  canvas.dataset.entryHigh = trade ? trade.entry_high : "";
+  canvas.dataset.stop = trade ? trade.stop : "";
+  canvas.dataset.target1 = trade ? trade.target1 : "";
+  canvas.dataset.target2 = trade ? trade.target2 : "";
+  canvas.dataset.currentPrice = c.price;
+
+  // Draw chart asynchronously
+  drawFyersChart(canvas, c.symbol, trade || null, c.price);
+
+  if (trade) {
+  const levels = el("div","chart-levels-legend");
+  levels.innerHTML = `
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:10px;">
+      <div style="text-align:center;">
+        <div style="font-size:10px;font-weight:600;color:var(--ink-3);letter-spacing:.06em">Entry Zone</div>
+        <div style="font-size:14px;font-weight:700;color:var(--accent);font-family:ui-monospace">₹${num(trade.entry_low)}-${num(trade.entry_high)}</div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:10px;font-weight:600;color:var(--ink-3);letter-spacing:.06em">Stop Loss</div>
+        <div style="font-size:14px;font-weight:700;color:var(--bad);font-family:ui-monospace">₹${num(trade.stop)}</div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:10px;font-weight:600;color:var(--ink-3);letter-spacing:.06em">Target 1</div>
+        <div style="font-size:14px;font-weight:700;color:var(--good);font-family:ui-monospace">₹${num(trade.target1)}</div>
+      </div>
+      <div style="text-align:center;">
+        <div style="font-size:10px;font-weight:600;color:var(--ink-3);letter-spacing:.06em">Target 2</div>
+        <div style="font-size:14px;font-weight:700;color:var(--good);font-family:ui-monospace">₹${num(trade.target2)}</div>
+      </div>
+    </div>
+  `;
+    wrapper.append(levels);
+  }
+
+  return wrapper;
+}
+
+/* Draw Fyers candlestick chart with levels on canvas */
+async function drawFyersChart(canvas, symbol, trade, currentPrice) {
+  const ctx = canvas.getContext("2d");
+  const padTop = 30, padBottom = 40, padLeft = 50, padRight = 62;
+  let W, H, chartW, chartH;
+
+  // Fetch 5-min candles from backend (fallback to mock data if unavailable)
+  let candles = [];
+  try {
+    const res = await fetch(`/api/candles?symbol=${encodeURIComponent(symbol)}&resolution=5&days=1`);
+    if (res.ok) {
+      const data = await res.json();
+      candles = data.candles || [];
+    }
+  } catch (err) {
+    console.warn("Failed to fetch candles, using mock data:", err);
+  }
+
+  // Fallback: generate mock candles if API fails
+  if (candles.length === 0) {
+    const now = Date.now();
+    const fiveMin = 5 * 60 * 1000;
+    const basePrice = currentPrice || (trade && trade.entry_low) || 2200;
+    for (let i = 0; i < 60; i++) {
+      const t = now - (59 - i) * fiveMin;
+      const volatility = basePrice * 0.003;
+      const open = basePrice + (Math.random() - 0.5) * volatility * 2;
+      const close = open + (Math.random() - 0.5) * volatility * 2;
+      const high = Math.max(open, close) + Math.random() * volatility;
+      const low = Math.min(open, close) - Math.random() * volatility;
+      candles.push({ timestamp: Math.floor(t / 1000), open, high, low, close, volume: Math.random() * 10000 });
+    }
+  }
+
+  /* Match the bitmap to the box it is actually painted into (x devicePixelRatio)
+     and draw in CSS pixels. Without this the browser rescales the bitmap and the
+     candles and text come out soft. */
+  const dpr = window.devicePixelRatio || 1;
+  W = canvas.clientWidth || 700;
+  H = canvas.clientHeight || 280;
+  if (canvas.width !== Math.round(W * dpr) || canvas.height !== Math.round(H * dpr)) {
+    canvas.width = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+  }
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  chartW = W - padLeft - padRight;
+  chartH = H - padTop - padBottom;
+
+  if (candles.length === 0) {
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ink-3').trim();
+    ctx.font = "12px sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No candle data available", W / 2, H / 2);
+    return;
+  }
+
+  // Determine price range including levels
+  const prices = candles.flatMap(c => [c.high, c.low]);
+  if (trade) prices.push(trade.entry_low, trade.entry_high, trade.stop, trade.target1, trade.target2);
+  prices.push(currentPrice);
+  const priceMin = Math.min(...prices.filter(p => isFinite(p)));
+  const priceMax = Math.max(...prices.filter(p => isFinite(p)));
+  const priceRange = priceMax - priceMin || 1;
+  const pricePad = priceRange * 0.08;
+
+  const yMin = priceMin - pricePad;
+  const yMax = priceMax + pricePad;
+  const yRange = yMax - yMin;
+
+  const X = i => padLeft + (i / (candles.length - 1 || 1)) * chartW;
+  const Y = price => padTop + chartH - ((price - yMin) / yRange) * chartH;
+
+  // Clear and set background
+  const bgColor = getComputedStyle(document.documentElement).getPropertyValue('--cell').trim();
+  ctx.fillStyle = bgColor;
+  ctx.fillRect(0, 0, W, H);
+
+  // Draw grid
+  const gridColor = getComputedStyle(document.documentElement).getPropertyValue('--line').trim();
+  ctx.strokeStyle = gridColor;
+  ctx.lineWidth = 1;
+  ctx.setLineDash([2, 4]);
+  for (let i = 0; i <= 4; i++) {
+    const y = padTop + (chartH / 4) * i;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(W - padRight, y);
+    ctx.stroke();
+  }
+  ctx.setLineDash([]);
+
+  // Draw candles
+  const bullColor = getComputedStyle(document.documentElement).getPropertyValue('--good').trim();
+  const bearColor = getComputedStyle(document.documentElement).getPropertyValue('--bad').trim();
+
+  candles.forEach((c, i) => {
+    const x = X(i);
+    const isBull = c.close >= c.open;
+    ctx.strokeStyle = isBull ? bullColor : bearColor;
+    ctx.fillStyle = isBull ? bullColor : bearColor;
+    ctx.lineWidth = 1;
+
+    // Wick
+    ctx.beginPath();
+    ctx.moveTo(x, Y(c.high));
+    ctx.lineTo(x, Y(c.low));
+    ctx.stroke();
+
+    // Body
+    const bodyTop = Y(Math.max(c.open, c.close));
+    const bodyBottom = Y(Math.min(c.open, c.close));
+    const bodyHeight = Math.max(bodyBottom - bodyTop, 1);
+    const candleWidth = Math.max(chartW / candles.length - 2, 2);
+
+    if (isBull) {
+      ctx.fillRect(x - candleWidth/2, bodyTop, candleWidth, bodyHeight);
+    } else {
+      ctx.fillRect(x - candleWidth/2, bodyTop, candleWidth, bodyHeight);
+    }
+  });
+
+  // Draw level lines
+  const accentColor = getComputedStyle(document.documentElement).getPropertyValue('--accent').trim();
+  const drawLevel = (price, color, label, lineWidth = 2) => {
+    if (!isFinite(price)) return;
+    const y = Y(price);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = lineWidth;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(W - padRight, y);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Label
+    ctx.fillStyle = color;
+    ctx.font = "bold 10px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(label, W - padRight - 5, y - 3);
+  };
+
+  if (trade) {
+    drawLevel((trade.entry_low + trade.entry_high) / 2, accentColor, "ENTRY", 2);
+    drawLevel(trade.stop, bearColor, "STOP", 2);
+    drawLevel(trade.target1, bullColor, "T1", 2);
+    drawLevel(trade.target2, bullColor, "T2", 2);
+  }
+
+  // Current price line
+  if (isFinite(currentPrice)) {
+    const y = Y(currentPrice);
+    ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--ink').trim();
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(padLeft, y);
+    ctx.lineTo(W - padRight, y);
+    ctx.stroke();
+
+    ctx.fillStyle = ctx.strokeStyle;
+    ctx.font = "bold 11px ui-monospace, monospace";
+    ctx.textAlign = "right";
+    ctx.fillText(`₹${currentPrice.toFixed(2)}`, W - 4, y + 4);
+  }
+
+  // A window that spans more than one session is ruled at each day change,
+  // so the axis times never appear to run backwards.
+  const dayLabel = ts => new Date(ts * 1000).toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  ctx.textAlign = "center";
+  for (let i = 1; i < candles.length; i++) {
+    if (dayLabel(candles[i].timestamp) === dayLabel(candles[i - 1].timestamp)) continue;
+    const x = X(i);
+    ctx.strokeStyle = gridColor;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(x, padTop);
+    ctx.lineTo(x, padTop + chartH);
+    ctx.stroke();
+    ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ink-3').trim();
+    ctx.font = "9px ui-monospace, monospace";
+    ctx.fillText(dayLabel(candles[i].timestamp), x, padTop - 8);
+  }
+
+  // Y-axis labels
+  ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--ink-3').trim();
+  ctx.font = "10px ui-monospace, monospace";
+  ctx.textAlign = "right";
+  for (let i = 0; i <= 4; i++) {
+    const price = yMin + (yRange / 4) * (4 - i);
+    const y = padTop + (chartH / 4) * i;
+    ctx.fillText(price.toFixed(0), padLeft - 8, y + 3);
+  }
+
+  // X-axis (time labels)
+  ctx.textAlign = "center";
+  const step = Math.max(1, Math.floor(candles.length / 6));
+  for (let i = 0; i < candles.length; i += step) {
+    const x = X(i);
+    const time = new Date(candles[i].timestamp * 1000); // Fyers stamps seconds
+    const label = time.toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', hour12: false });
+    ctx.fillText(label, x, H - padBottom + 20);
+  }
+}
+
 /* Session path: today's 5-minute closes against the running VWAP, with the
    breakout level as a rule. Two series, so both are labelled directly. */
 function spark(c){
@@ -995,7 +1367,7 @@ function spark(c){
    pair a colour-blind reader loses, and confusing them is the most expensive
    mistake this page could cause. */
 function ladder(c){
-  const wrap = el("div");
+  const wrap = el("div","level-visual");
   const t = c.trade;
   const vals = [c.or_low,c.or_high,c.vwap,c.price,c.day_low,c.day_high]
     .concat(t?[t.stop,t.target1,t.target2]:[])
@@ -1014,23 +1386,43 @@ function ladder(c){
     zone("rew",t.entry_high,t.target2,"reward "+num(t.entry_high)+" → "+num(t.target2));
     zone("entry",t.entry_low,t.entry_high,"entry zone "+num(t.entry_low)+" – "+num(t.entry_high));
   }
-  const rule=(v,color,label,cap)=>{
+  const rule=(v,color,label,cap,labelPos)=>{
     if(typeof v!=="number"||!isFinite(v)) return;
     const r=el("div","rule"); r.style.left=X(v)+"%";
     r.style.background=color; r.style.color=color; r.title=label+" "+num(v);
+    if(cap) r.append(el("span","label"+(labelPos ? " "+labelPos : ""),label));
     if(cap) r.append(el("i","cap-"+cap));
     lad.append(r);
   };
   rule(c.or_high,"var(--ink-2)","breakout level (09:15–09:30 high)");
   rule(c.vwap,"var(--ink-3)","VWAP");
   if(t){
-    rule(t.stop,"var(--bad)","stop","sq");
-    rule(t.target1,"var(--good)","target 1","tri");
-    rule(t.target2,"var(--good)","target 2","tri");
+    rule(t.stop,"var(--bad)","SL","sq");
+    rule(t.target1,"var(--good)","T1","tri");
+    rule(t.target2,"var(--good)","T2","tri","below");
   }
   const dot=el("div","dot"); dot.style.left=X(c.price)+"%";
   dot.title="current price "+num(c.price); lad.append(dot);
   wrap.append(lad);
+
+  const explain=el("div","level-explain");
+  if(t){
+    if(t.target2_hit || (t.target2 && c.price >= t.target2)){
+      explain.innerHTML = "<b style='color:var(--good)'>✓ Target 2 (" + num(t.target2) + ") achieved today.</b> Move has played out. Do not enter.";
+    } else if(t.target1_hit || (t.target1 && c.price >= t.target1)){
+      explain.innerHTML = "<b style='color:var(--good)'>✓ Target 1 (" + num(t.target1) + ") achieved today.</b> Initial profit target completed. Do not enter.";
+    } else if(c.price < t.entry_low)
+      explain.innerHTML = "<b>Current price is below the entry zone.</b> Wait for a move into the blue band.";
+    else if(c.price > t.entry_high)
+      explain.innerHTML = "<b>Current price is above the entry zone.</b> Setup is extended — do not chase.";
+    else
+      explain.innerHTML = "<b>Current price is inside the entry zone.</b> Targets are upcoming on the track.";
+  }else if(c.price > c.or_high){
+    explain.innerHTML = "<b>Price is above the breakout level.</b> No trade plan: wait for a fresh setup or pullback.";
+  }else{
+    explain.innerHTML = "<b>Price has not cleared the breakout level.</b> The setup is not ready for entry.";
+  }
+  wrap.append(explain);
 
   const lg=el("div","lgnd");
   const key=(color,txt,round)=>{const s=el("span"); const i=el("i",round?"rnd":null);
@@ -1041,8 +1433,8 @@ function ladder(c){
   key("var(--ink-3)","VWAP "+num(c.vwap));
   if(t){
     key("var(--bad)","■ Stop "+num(t.stop));
-    key("var(--good)","▲ T1 "+num(t.target1));
-    key("var(--good)","▲ T2 "+num(t.target2));
+    key("var(--good)","▲ T1 "+num(t.target1) + (t.target1_hit ? " (HIT)" : ""));
+    key("var(--good)","▲ T2 "+num(t.target2) + (t.target2_hit ? " (HIT)" : ""));
   }
   wrap.append(lg);
   return wrap;
@@ -1056,10 +1448,18 @@ function plan(c){
   cell("Entry zone","₹"+num(t.entry_low)+" – "+num(t.entry_high),"",
        "buy inside this band only",true);
   cell("Stop loss","₹"+num(t.stop),"bad",t.stop_basis);
-  cell("Target 1","₹"+num(t.target1),"good","1:"+t.rr1);
-  cell("Target 2","₹"+num(t.target2),"good","1:"+t.rr2);
-  cell("Risk","₹"+num(t.risk),"",t.risk_pct.toFixed(2)+"% of price");
-  return g;
+  const t1Note = t.target1_hit ? "✓ ACHIEVED" : "1:"+t.rr1;
+  const t2Note = t.target2_hit ? "✓ ACHIEVED" : "1:"+t.rr2;
+  cell("Target 1","₹"+num(t.target1),"good",t1Note);
+  cell("Target 2","₹"+num(t.target2),"good",t2Note);
+  const guide = el("div","plan-guide");
+  const explain=(title,text)=>{const d=el("div"); d.append(el("b",null,title)); d.append(document.createTextNode(text)); guide.append(d);};
+  explain("Entry", "Where you may buy, if price returns to this band.");
+  explain("Stop loss", "Exit if price falls here. This limits the loss.");
+  explain("Target 1", t.target1_hit ? "Target 1 was already reached today." : "First profit area. Consider taking partial profit.");
+  explain("Target 2", t.target2_hit ? "Target 2 was already reached today." : "Second profit area. The larger planned objective.");
+  const holder=el("div"); holder.append(g,guide);
+  return holder;
 }
 
 /* ---------- table ---------- */
@@ -1203,10 +1603,11 @@ __THEMEJS__
 
 _TOPBAR_RIGHT = """    <div class="live"><span class="led" id="led"></span><span id="stamp">—</span></div>
     <div class="seg" id="seg">
-      <button data-f="all" aria-pressed="true">All <span class="n" id="n-all"></span></button>
+      <button data-f="active" aria-pressed="true">Active <span class="n" id="n-active"></span></button>
       <button data-f="BUY" aria-pressed="false">Buy <span class="n" id="n-BUY"></span></button>
       <button data-f="WATCH" aria-pressed="false">Watch <span class="n" id="n-WATCH"></span></button>
-      <button data-f="AVOID" aria-pressed="false">Avoid <span class="n" id="n-AVOID"></span></button>
+      <button data-f="DONE" aria-pressed="false">Done <span class="n" id="n-DONE"></span></button>
+      <button data-f="all" aria-pressed="false">All <span class="n" id="n-all"></span></button>
     </div>
     <button class="btn go" id="rescan">Scan now</button>
     <label class="chk"><input type="checkbox" id="auto" checked> auto</label>"""

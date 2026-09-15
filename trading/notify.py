@@ -32,8 +32,9 @@ def _macos(title: str, message: str) -> None:
 
 
 def _telegram(title: str, message: str) -> None:
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    chat_id = os.environ.get("TELEGRAM_CHAT_ID")
+    from trading.config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    token = os.environ.get("TELEGRAM_BOT_TOKEN") or TELEGRAM_BOT_TOKEN
+    chat_id = os.environ.get("TELEGRAM_CHAT_ID") or TELEGRAM_CHAT_ID
     if not token or not chat_id:
         return
     try:

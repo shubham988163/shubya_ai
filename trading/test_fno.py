@@ -108,6 +108,12 @@ TODAY_WEAK_VOL = [
     *TODAY_CLEAN[4:],
 ]
 
+# Broke out, retested, and already completed its target move today (Close 102.10)
+TODAY_TARGET_HIT = [
+    *TODAY_CLEAN[:5],
+    ["2026-08-20T09:40:00+05:30", 101.45, 102.20, 101.40, 102.10, 80_000],
+]
+
 
 def stock_df(today_rows: list[list]) -> pd.DataFrame:
     return _frame(history_bars() + today_rows)
@@ -260,6 +266,14 @@ def test_trade_levels():
           any(kind == "risk" and "resistance at" in text
               for kind, text in tight_problems), str(tight_problems))
 
+    # A move that already reached its targets is rejected as a fresh trade
+    _, lv_th, st_th = _levels(TODAY_TARGET_HIT)
+    t_hit, why_th = setup_mod.build_trade(stock_df(TODAY_TARGET_HIT), TODAY, lv_th, st_th)
+    check("target hit is detected on completed moves", st_th.target1_hit and st_th.target2_hit)
+    check("status reads target achieved", "TARGET" in st_th.status, st_th.status)
+    check("target achieved move is rejected as a fresh entry",
+          any("already achieved" in text for _, text in why_th))
+
 
 # --- market context --------------------------------------------------------
 
@@ -380,6 +394,8 @@ def test_filters():
     check("failed breakout is vetoed",
           any("failed breakout" in r or "not holding" in r
               for r in rejected(rows=TODAY_FAILED)))
+    check("completed target move is vetoed",
+          any("already achieved" in r for r in rejected(rows=TODAY_TARGET_HIT)))
 
 
 # --- windows ---------------------------------------------------------------

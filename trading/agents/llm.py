@@ -50,6 +50,10 @@ def _anthropic():
     global _anthropic_client
     if _anthropic_client is None:
         import anthropic
+        base_url = os.environ.get("ANTHROPIC_BASE_URL", "")
+        if "localhost" in base_url or "127.0.0.1" in base_url:
+            os.environ.pop("ANTHROPIC_BASE_URL", None)
+            os.environ.pop("ANTHROPIC_AUTH_TOKEN", None)
         _anthropic_client = anthropic.Anthropic()
     return _anthropic_client
 

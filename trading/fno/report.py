@@ -308,6 +308,7 @@ def _index_plan(plan) -> dict | None:
         "status": plan.status, "tradeable": plan.tradeable,
         "entry_low": plan.entry_low, "entry_high": plan.entry_high,
         "stop": plan.stop, "target1": plan.target1, "target2": plan.target2,
+        "target1_hit": plan.target1_hit, "target2_hit": plan.target2_hit,
         "reasons": plan.reasons, "rejections": plan.rejections,
         "caveats": plan.caveats,
         "option": None if o is None else {
@@ -394,6 +395,7 @@ def _cand(c: Candidate, when, rank: int | None = None) -> dict:
             "status": st.status, "breakout": st.breakout, "holding": st.holding,
             "retested": st.retested, "retest_low": st.retest_low,
             "extended": st.extended, "failed": st.failed_breakout,
+            "target1_hit": st.target1_hit, "target2_hit": st.target2_hit,
             "breakout_time": st.breakout_time.strftime("%H:%M")
             if st.breakout_time else None,
         },
@@ -410,6 +412,8 @@ def _cand(c: Candidate, when, rank: int | None = None) -> dict:
             "entry_low": t.entry_low, "entry_high": t.entry_high, "entry": t.entry,
             "stop": t.stop, "stop_basis": t.stop_basis,
             "target1": t.target1, "target2": t.target2,
+            "target1_hit": t.target1_hit, "target2_hit": t.target2_hit,
+            "is_actionable": t.is_actionable,
             "risk": t.risk, "risk_pct": t.risk / t.entry * 100,
             "rr1": t.rr1, "rr2": t.rr2,
         },

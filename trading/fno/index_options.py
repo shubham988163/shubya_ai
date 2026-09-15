@@ -55,6 +55,8 @@ class IndexPlan:
     stop: float | None = None
     target1: float | None = None
     target2: float | None = None
+    target1_hit: bool = False
+    target2_hit: bool = False
     option: object | None = None          # options.OptionPlan
     reasons: list[str] = field(default_factory=list)
     rejections: list[str] = field(default_factory=list)
@@ -62,6 +64,10 @@ class IndexPlan:
 
     @property
     def status(self) -> str:
+        if self.target2_hit:
+            return "TARGET 2 ACHIEVED"
+        if self.target1_hit:
+            return "TARGET 1 ACHIEVED"
         if not self.breakout:
             return "NO BREAKOUT"
         if self.extended:
@@ -137,7 +143,7 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
             "fights the tape it is made of")
     if ema_f and ema_s and ema_f < ema_s:
         plan.rejections.append("the 20 EMA is below the 50 EMA — the trend does "
-                               "not support a long")
+                                "not support a long")
 
     # Levels, on the same rules the stock setups use.
     entry_low, entry_high = or_high, or_high + 0.40 * atr
@@ -154,6 +160,16 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
     plan.stop = stop
     plan.target1 = entry + C.TARGET_RR_1 * risk
     plan.target2 = entry + C.TARGET_RR_2 * risk
+
+    if plan.day_high >= plan.target1 - 1e-6 or spot >= plan.target1 - 1e-6:
+        plan.target1_hit = True
+    if plan.day_high >= plan.target2 - 1e-6 or spot >= plan.target2 - 1e-6:
+        plan.target2_hit = True
+
+    if plan.target2_hit:
+        plan.rejections.append(f"Target 2 ({plan.target2:.2f}) already achieved today (day high {plan.day_high:.2f}) — target move completed; do not enter now")
+    elif plan.target1_hit:
+        plan.rejections.append(f"Target 1 ({plan.target1:.2f}) already achieved today (day high {plan.day_high:.2f}) — target move completed; do not enter now")
 
     plan.reasons.append(
         f"closed above the 09:15–09:30 high {or_high:.2f}"

@@ -240,7 +240,53 @@ def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
     t1 = entry + C.TARGET_RR_1 * risk
     t2 = entry + C.TARGET_RR_2 * risk
 
-    if lv.overhead:
+    t1_hit = False
+    t2_hit = False
+
+    # Check if current price is at or above target
+    if lv.price >= t1 - 1e-6:
+        t1_hit = True
+    if lv.price >= t2 - 1e-6:
+        t2_hit = True
+
+    # Check if price action after the retest/breakout setup completed has reached target
+    if st.breakout_time is not None and not post.empty:
+        # If retested, evaluate bars after the retest bar; otherwise bars after the breakout bar
+        if st.retested:
+            after_bo = post.iloc[1:]
+            band = R + C.RETEST_TOLERANCE_ATR * atr_val
+            touched_retest = after_bo[(after_bo["Low"] <= band) & (after_bo["Close"] > R)]
+            if not touched_retest.empty:
+                after_setup = post[post.index > touched_retest.index[-1]]
+            else:
+                after_setup = post[post.index > pd.Timestamp(st.breakout_time)]
+        else:
+            after_setup = post[post.index > pd.Timestamp(st.breakout_time)]
+
+        if not after_setup.empty:
+            max_close = float(after_setup["Close"].max())
+            max_high = float(after_setup["High"].max())
+            if max_close >= t1 - 1e-6:
+                t1_hit = True
+            if max_high >= t2 - 1e-6 or max_close >= t2 - 1e-6:
+                t2_hit = True
+
+    if t1_hit:
+        st.target1_hit = True
+    if t2_hit:
+        st.target2_hit = True
+
+    if t2_hit:
+        problems.append((
+            "timing",
+            f"Target 2 ({t2:.2f}) already achieved today — target move completed; do not enter now"
+        ))
+    elif t1_hit:
+        problems.append((
+            "timing",
+            f"Target 1 ({t1:.2f}) already achieved today — target move completed; do not enter now"
+        ))
+    elif lv.overhead:
         room = (lv.overhead - entry) / risk
         if room < C.MIN_RR_TO_RESISTANCE:
             problems.append((
@@ -250,5 +296,6 @@ def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
 
     trade = Trade(entry_low=entry_low, entry_high=entry_high, entry=entry,
                   stop=stop, stop_basis=basis, target1=t1, target2=t2,
-                  risk=risk, rr1=C.TARGET_RR_1, rr2=C.TARGET_RR_2)
+                  risk=risk, rr1=C.TARGET_RR_1, rr2=C.TARGET_RR_2,
+                  target1_hit=t1_hit, target2_hit=t2_hit)
     return trade, problems

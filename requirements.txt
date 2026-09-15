@@ -4,6 +4,7 @@ anthropic>=0.90.0     # Claude (used when ANTHROPIC_API_KEY is set)
 pandas>=2.0           # strategy engine
 yfinance>=0.2.40      # free delayed NSE data (candles + pre-market snapshot)
 requests>=2.31        # NSE public endpoints (F&O open interest, indices)
+fyers-apiv3>=3.0.0    # official Fyers OAuth + live data client
 
 # Optional — uncomment as you build out the pipeline
 # pandas-ta          # extra indicators

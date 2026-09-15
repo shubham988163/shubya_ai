@@ -111,10 +111,16 @@ class Structure:
     failed_breakout: bool
     rejection: bool
     extended: bool
+    target1_hit: bool = False
+    target2_hit: bool = False
     notes: list[str] = field(default_factory=list)
 
     @property
     def status(self) -> str:
+        if self.target2_hit:
+            return "TARGET 2 ACHIEVED"
+        if self.target1_hit:
+            return "TARGET 1 ACHIEVED"
         if self.failed_breakout:
             return "FAILED BREAKOUT"
         if self.breakout and self.retested and self.holding:
@@ -152,6 +158,12 @@ class Trade:
     risk: float
     rr1: float
     rr2: float
+    target1_hit: bool = False
+    target2_hit: bool = False
+
+    @property
+    def is_actionable(self) -> bool:
+        return not self.target1_hit and not self.target2_hit
 
 
 @dataclass

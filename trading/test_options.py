@@ -245,6 +245,16 @@ def test_fyers_parsing():
     check("an unreachable Fyers server reports plainly, and is not connected",
           ok is False and "cannot reach" in note, note)
 
+    # A missing SDK must also be a clear install hint, never a raw traceback.
+    try:
+        ok, note = fyers.FyersClient().status()
+    except Exception as exc:  # pragma: no cover - this is the current failure mode we are fixing
+        check("missing fyers SDK is surfaced as a friendly message",
+              False, f"raised {type(exc).__name__}: {exc}")
+    else:
+        check("missing fyers SDK is surfaced as a friendly message",
+              ok is False and ("install" in note.lower() or "fyers" in note.lower()), note)
+
 
 def _nifty_bars(rows):
     """5-minute NIFTY bars — index feeds carry no volume, which is the point."""

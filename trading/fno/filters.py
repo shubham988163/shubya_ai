@@ -32,6 +32,11 @@ def apply(cand: Candidate, mkt: MarketContext,
         veto("volume", f"breakout came on {st.breakout_vol_mult:.1f}x volume — no "
                        "expansion behind it")
 
+    if st.target2_hit:
+        veto("timing", "Target 2 already achieved today — target move completed; do not enter now")
+    elif st.target1_hit:
+        veto("timing", "Target 1 already achieved today — target move completed; do not enter now")
+
     if st.extended:
         veto("timing", "price is already extended from the level/VWAP — this is a "
                        "chase; wait for a pullback into the entry zone")

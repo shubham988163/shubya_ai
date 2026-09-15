@@ -555,6 +555,10 @@ window.ScannerAlerts = (function(){
 
   function checkAndAlert(item, type){
     if(!item || !item.symbol) return;
+    const isTargetHit = (item.trade && (item.trade.target1_hit || item.trade.target2_hit || (item.trade.target1 && item.price >= item.trade.target1))) ||
+                        (item.structure && (item.structure.target1_hit || item.structure.target2_hit || (item.structure.status && item.structure.status.indexOf("TARGET") >= 0)));
+    if(type === 'BUY' && isTargetHit) return; // Never fire BUY alerts for already completed targets
+
     const key = `${item.symbol}_${type}_${item.structure?.status || item.score || ''}`;
     if(seenAlerts.has(key)) return;
     seenAlerts.add(key);
@@ -574,6 +578,8 @@ window.ScannerAlerts = (function(){
       details: details
     });
     flashTitle(`${type}: ${item.symbol} (${pxStr})`);
+    // Send Telegram alert for live stock signals
+    sendTelegramAlert(item, type);
   }
 
   function toggleAlerts(){
@@ -619,6 +625,27 @@ window.ScannerAlerts = (function(){
     }
   }
 
+  function sendTelegramAlert(item, type) {
+    try {
+      // Send Telegram notification for live stock alerts
+      const isBuy = type === 'BUY';
+      const title = isBuy ? `⚡ F&O BUY: ${item.symbol}` : `◔ F&O WATCH: ${item.symbol}`;
+      const price = item.price ? `₹${Number(item.price).toLocaleString('en-IN')}` : '';
+      const score = item.score ? `Score: ${Math.round(item.score)}/100 · ${item.grade || ''}` : '';
+      const details = `${score} ${item.reasons && item.reasons[0] ? '· ' + item.reasons[0] : ''}`;
+      const message = `${price} | ${details}`;
+
+      // Call the server-side API to send Telegram alert
+      fetch('/api/telegram-alert', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({title, message})
+      }).catch(e => console.warn('Telegram alert failed:', e));
+    } catch(e) {
+      console.warn('Telegram alert error:', e);
+    }
+  }
+
   return {
     init: function(){
       updateButtonUI();
@@ -627,6 +654,7 @@ window.ScannerAlerts = (function(){
     toggle: toggleAlerts,
     playSound: playSound,
     showToast: showToast,
+    sendTelegramAlert: sendTelegramAlert,
     checkAndAlert: checkAndAlert,
     focusStock: focusStock
   };
