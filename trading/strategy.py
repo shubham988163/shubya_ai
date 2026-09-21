@@ -416,12 +416,16 @@ class Engine:
     def size(self, price: float, risk_per_share: float) -> int:
         if risk_per_share <= 0 or price <= 0:
             return 0
-        # Cautious days shrink the rupees we risk, not the buying power —
-        # a scaled position cap priced the whole watchlist out for a small
-        # account. MAX_POSITION_VALUE itself stays a hard, unscaled ceiling.
-        risk_inr = RISK_PER_TRADE * self.router.day_config["risk_multiplier"]
+        from trading.config import get_dynamic_risk_per_trade
+        base_risk = get_dynamic_risk_per_trade()
+        risk_inr = base_risk * self.router.day_config["risk_multiplier"]
+        try:
+            from trading.challenge import get_challenge_state
+            pos_cap = get_challenge_state().get("max_position_value", MAX_POSITION_VALUE)
+        except Exception:
+            pos_cap = MAX_POSITION_VALUE
         qty = int(risk_inr / risk_per_share)
-        return min(qty, int(MAX_POSITION_VALUE / price))
+        return min(qty, int(pos_cap / price))
 
     def try_enter(self, symbol: str, df: pd.DataFrame, ts: float):
         if symbol in self.open:

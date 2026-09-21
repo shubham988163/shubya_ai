@@ -157,6 +157,17 @@ def pivot_lows(day_df: pd.DataFrame, span: int = 2) -> list[float]:
     return out
 
 
+def pivot_highs(day_df: pd.DataFrame, span: int = 2) -> list[float]:
+    """Local highs with `span` lower highs on both sides."""
+    highs = day_df["High"].astype(float).tolist()
+    out = []
+    for i in range(span, len(highs) - span):
+        window = highs[i - span:i + span + 1]
+        if highs[i] == max(window) and window.count(highs[i]) == 1:
+            out.append(highs[i])
+    return out
+
+
 def higher_highs_lows(day_df: pd.DataFrame, bars: int = 6) -> tuple[bool, bool]:
     """Are the recent swing points stepping up?
 

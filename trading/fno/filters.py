@@ -44,18 +44,26 @@ def apply(cand: Candidate, mkt: MarketContext,
     if st.failed_breakout:
         veto("structure", "failed breakout — price closed back below the level")
 
-    if not cand.oi.bullish:
+    if not cand.oi.bullish and cand.direction == "BUY":
+        veto("oi", f"futures OI says {cand.oi.classification} — {cand.oi.detail}")
+    if cand.oi.bullish and cand.direction == "SELL":
         veto("oi", f"futures OI says {cand.oi.classification} — {cand.oi.detail}")
 
-    if mkt.classification == "STRONGLY BEARISH":
+    if mkt.classification == "STRONGLY BEARISH" and cand.direction == "BUY":
         veto("market", "broader market is strongly bearish — no long")
+    if mkt.classification == "STRONGLY BULLISH" and cand.direction == "SELL":
+        veto("market", "broader market is strongly bullish — no short")
 
-    if cand.sector_strength is not None and cand.sector_strength < WEAK_SECTOR_PCT:
-        veto("sector", f"sector is weak ({cand.sector_strength:+.2f}%) — the long "
-                       "fights its sector")
+    if cand.sector_strength is not None:
+        if cand.direction == "BUY" and cand.sector_strength < WEAK_SECTOR_PCT:
+            veto("sector", f"sector is weak ({cand.sector_strength:+.2f}%) — the long fights its sector")
+        elif cand.direction == "SELL" and cand.sector_strength > -WEAK_SECTOR_PCT:
+            veto("sector", f"sector is strong ({cand.sector_strength:+.2f}%) — the short fights its sector")
 
-    if lv.price < lv.vwap:
+    if cand.direction == "BUY" and lv.price < lv.vwap:
         veto("vwap", "price is below VWAP")
+    if cand.direction == "SELL" and lv.price > lv.vwap:
+        veto("vwap", "price is above VWAP")
 
     if lv.rvol is not None and lv.rvol < C.MIN_RVOL:
         veto("volume", f"relative volume {lv.rvol:.2f}x — participation is below "

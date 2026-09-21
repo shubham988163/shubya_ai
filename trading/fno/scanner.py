@@ -71,13 +71,15 @@ class Scanner:
                  allow_delayed: bool = False,
                  symbols: list[str] | None = None,
                  shortlist: int = C.SHORTLIST_SIZE,
-                 with_options: bool = True):
+                 with_options: bool = True,
+                 direction: str = "BOTH"):
         self.feed = feed
         self.now = now or datetime.now(IST)
         self.allow_delayed = allow_delayed
         self.symbols = symbols
         self.shortlist_size = shortlist
         self.with_options = with_options
+        self.direction = direction
         self.option_board: list = []
         self.skips: Counter[str] = Counter()
 
@@ -99,8 +101,10 @@ class Scanner:
                 continue
             if pct is None or not (C.MIN_ABS_MOVE_PCT <= abs(pct) <= C.MAX_ABS_MOVE_PCT):
                 continue
-            if pct <= 0:
-                continue                       # long scanner: skip red names
+            if self.direction == "BUY" and pct <= 0:
+                continue
+            if self.direction == "SELL" and pct >= 0:
+                continue
             fut = board[sym]
             liquidity = fut.turnover_cr or 0
             scored.append((pct + min(liquidity / 500, 1.0), sym))
@@ -147,7 +151,8 @@ class Scanner:
             levels.pct_change = pct        # keep the display and the OI read in step
             derived_pct = True
 
-        structure = setup_mod.read_structure(df, day, levels)
+        direction = "BUY" if (pct or 0) > 0 else "SELL"
+        structure = setup_mod.read_structure(df, day, levels, direction)
         oi_read = oi_mod.classify(pct, fut.oi_change_pct)
         sector = C.SECTORS.get(symbol, "UNMAPPED")
 
@@ -157,6 +162,7 @@ class Scanner:
             rel_strength=(pct or 0) - (market.nifty_pct or 0),
             sector_strength=market.sector_pct.get(sector),
             sources=[candles.prov, fut.prov],
+            direction=direction,
         )
 
         age = fut.prov.age_min(self.now)
@@ -173,7 +179,7 @@ class Scanner:
 
         cand.spark = self._spark(df, day)
 
-        trade, problems = setup_mod.build_trade(df, day, levels, structure)
+        trade, problems = setup_mod.build_trade(df, day, levels, structure, direction)
         cand.trade = trade
         self.attach_options(cand)
         scoring.score_candidate(cand, market)

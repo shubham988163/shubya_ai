@@ -7,6 +7,11 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
+# --- Trading Mode: "paper" vs "live" ---
+# Default is "paper". When you are ready to trade with real money in Fyers,
+# change this to "live" (or set the TRADING_MODE=live environment variable).
+TRADING_MODE = os.environ.get("TRADING_MODE", "paper")
+
 # --- Telegram Notifications ---
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8609336942:AAGU7IMNSDcbPTfe4ykhXamnLplZRtwb1OI")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "629517899")
@@ -66,10 +71,19 @@ SLOW_EMA = 21
 CANDLE_INTERVAL = "15m"
 SWING_LOOKBACK = 10             # bars used to find the swing low/high for the stop
 RR_TARGET = 2.0                 # target = entry +/- 2x risk (1:2)
-# Account sizing (2026-07-30): capital raised to 10,00,000 INR ("1000k").
-# Risk 0.5% per trade — standard prudent intraday sizing at this scale.
-ACCOUNT_CAPITAL = 1_000_000.0
-RISK_PER_TRADE = 5_000.0        # INR risked per trade (0.5%) -> sizes the position
+# Account sizing calibrated specifically for 15k to 1 Lakh Survival & Compounding Challenge:
+ACCOUNT_CAPITAL = 15_000.0
+CHALLENGE_TARGET = 100_000.0
+RISK_PER_TRADE = 225.0          # INR risked per trade base (1.5% of 15k) -> safe, realistic position sizing
+
+def get_dynamic_risk_per_trade() -> float:
+    """Return dynamic risk per trade from the 15k->1 Lakh challenge engine."""
+    try:
+        from trading.challenge import get_challenge_risk
+        return get_challenge_risk()
+    except Exception:
+        return RISK_PER_TRADE
+
 POLL_SECONDS = 60               # live-loop poll interval (delayed data)
 SQUAREOFF_TIME = "15:15"        # IST intraday square-off
 MARKET_OPEN = "09:15"
@@ -83,10 +97,10 @@ AVWAP_EMA_LEN = 20              # trend filter
 AVWAP_VOL_MULT = 1.2            # volume surge threshold vs 20-bar average
 
 # --- Risk kernel (hard limits — the AI agent can NEVER override these) ---
-# Scaled to ACCOUNT_CAPITAL = 10,00,000 INR:
-DAILY_LOSS_LIMIT = -10_000.0    # INR; hard stop for the day (1% of capital)
-MAX_POSITION_VALUE = 200_000.0  # INR per position (20% of capital)
-MAX_OPEN_POSITIONS = 5          # portfolio cap (max 100% of capital deployed)
+# Scaled to ACCOUNT_CAPITAL = 15,000 INR:
+DAILY_LOSS_LIMIT = -600.0       # INR; hard stop for the day (~4% max drawdown cap)
+MAX_POSITION_VALUE = 50_000.0   # INR per position (within 5x intraday MIS leverage)
+MAX_OPEN_POSITIONS = 3          # max 3 simultaneous positions (preserves margin)
 MAX_ORDERS_PER_SEC = 8          # SEBI 10-OPS threshold with buffer
 
 # --- Fill simulation (paper mode) ---

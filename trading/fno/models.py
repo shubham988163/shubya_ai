@@ -176,6 +176,7 @@ class Candidate:
     oi: OIRead
     rel_strength: float          # stock %chg minus NIFTY %chg
     sector_strength: float | None
+    direction: str = "BUY"
     scores: dict[str, float] = field(default_factory=dict)
     score: float = 0.0
     grade: str = "Avoid"

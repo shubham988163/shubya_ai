@@ -171,14 +171,38 @@ def get_data(date: str | None) -> dict:
         "FROM agent_log ORDER BY ts DESC LIMIT 50").fetchall()]
     conn.close()
 
+    open_trades = [t for t in trades if t["status"] == "open"]
+    total_unrealized = 0.0
+    total_est_charges = 0.0
+    for t in open_trades:
+        try:
+            ltp = _get_ltp(t["symbol"])
+            t["current_price"] = round(ltp, 2)
+            side_mult = 1.0 if str(t["side"]).upper() == "BUY" else -1.0
+            gross_pnl = (ltp - t["entry_price"]) * t["qty"] * side_mult
+            est_chg = round_trip_charges(t["entry_price"], ltp, t["qty"])
+            t["unrealized_pnl"] = round(gross_pnl - est_chg, 2)
+            t["unrealized_gross_pnl"] = round(gross_pnl, 2)
+            t["est_charges"] = round(est_chg, 2)
+            total_unrealized += t["unrealized_pnl"]
+            total_est_charges += est_chg
+        except Exception:
+            t["current_price"] = None
+            t["unrealized_pnl"] = None
+            t["est_charges"] = None
+
     closed = [t for t in trades if t["status"] == "closed"]
     wins = [t for t in closed if (t["pnl"] or 0) > 0]
+    closed_pnl = sum(t["pnl"] or 0 for t in closed)
+    closed_charges = sum(t["charges"] or 0 for t in closed)
     stats = {
-        "net_pnl": round(sum(t["pnl"] or 0 for t in closed), 2),
+        "net_pnl": round(closed_pnl + total_unrealized, 2),
+        "realized_pnl": round(closed_pnl, 2),
+        "unrealized_pnl": round(total_unrealized, 2),
         "win_rate": round(len(wins) / len(closed) * 100, 1) if closed else None,
         "trades": len(trades),
-        "open": len(trades) - len(closed),
-        "charges": round(sum(t["charges"] or 0 for t in closed), 2),
+        "open": len(open_trades),
+        "charges": round(closed_charges + total_est_charges, 2),
         "rejections_today": sum(1 for r in rejections
                                 if date and __import__("datetime").datetime
                                 .fromtimestamp(r["ts"]).strftime("%Y-%m-%d") == date),
@@ -203,6 +227,13 @@ def get_data(date: str | None) -> dict:
     except Exception:  # noqa: BLE001
         prov, model = "?", "?"
 
+    challenge_data = None
+    try:
+        from trading.challenge import get_challenge_state
+        challenge_data = get_challenge_state()
+    except Exception:
+        pass
+
     return {"date": date, "dates": dates, "stats": stats, "trades": trades,
             "rejections": rejections, "agent_log": agent_log,
             "day_config": day_config, "report": report,
@@ -210,7 +241,8 @@ def get_data(date: str | None) -> dict:
             "retention_days": RETENTION_DAYS,
             "side_report": _breakdown(trades, "side"),
             "strategy_report": _breakdown(trades, "strategy_id"),
-            "day_pnl_all_time": ledger.day_realized_pnl(date) if date else 0}
+            "day_pnl_all_time": ledger.day_realized_pnl(date) if date else 0,
+            "challenge": challenge_data}
 
 
 _PAGE_TEMPLATE = r"""<!doctype html>
@@ -324,6 +356,85 @@ __TOPBAR__
     </div>
     <div id="liveTickerItems" style="display:flex;gap:10px;padding:10px 13px;overflow-x:auto;align-items:stretch">
       <span class="muted" style="font-size:11.5px">Loading live market quotes…</span>
+    </div>
+  </section>
+
+  <!-- 15k to 1 Lakh Survival & Compounding Challenge Panel -->
+  <section class="panel" id="challengePanel" style="margin-top:14px;border:1px solid color-mix(in srgb,var(--accent) 35%,var(--line));background:linear-gradient(180deg,color-mix(in srgb,var(--card) 92%,var(--accent-soft)),var(--card))">
+    <div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--cell);border-bottom:1px solid var(--line);flex-wrap:wrap;gap:8px">
+      <div style="display:flex;align-items:center;gap:9px">
+        <span style="font-size:16px">🎯</span>
+        <span style="font-size:12px;font-weight:750;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)">
+          15K → 1 LAC Survival &amp; Compounding Challenge
+        </span>
+        <span id="chPhaseBadge" class="badge" style="font-size:10px;padding:2px 7px;background:var(--accent-soft);color:var(--accent);font-weight:700">PHASE 1</span>
+        <span id="chHealthBadge" class="badge" style="font-size:10px;padding:2px 7px;background:var(--good-soft, rgba(0,200,100,0.1));color:var(--good);font-weight:700">100% SURVIVAL HEALTH</span>
+      </div>
+      <div style="display:flex;align-items:center;gap:10px;font-size:11.5px">
+        <span class="muted" id="chTargetMeta">Goal: ₹1,00,000 INR (6.67x)</span>
+        <button class="btn sm" id="btnRecalcChallenge" style="padding:2px 8px;font-size:10.5px">Refresh Stats</button>
+        <button class="btn sm" id="btnResetChallenge" style="padding:2px 8px;font-size:10.5px;color:var(--bad)">Reset to ₹15k</button>
+      </div>
+    </div>
+    
+    <div class="body" style="padding:14px">
+      <!-- Progress Bar with Checkpoints -->
+      <div style="margin-bottom:14px">
+        <div style="display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px;font-size:12px">
+          <div>
+            <span style="font-weight:700;font-size:20px;color:var(--ink)" id="chEquity">₹15,000.00</span>
+            <span id="chRoiMultiple" class="up" style="margin-left:8px;font-weight:600;font-size:12.5px">+0.0% · 1.00x</span>
+          </div>
+          <div style="text-align:right">
+            <span style="color:var(--ink-2)" id="chDistance">₹85,000 to ₹1 Lakh Goal</span>
+            <span style="font-weight:700;color:var(--accent);margin-left:6px" id="chPct">0.0%</span>
+          </div>
+        </div>
+        <div style="position:relative;background:var(--line);border-radius:999px;height:12px;overflow:hidden;box-shadow:inset 0 1px 3px rgba(0,0,0,0.2)">
+          <div id="chProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg,var(--accent),#10b981);border-radius:999px;transition:width 0.6s ease"></div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:10px;color:var(--ink-3);font-family:ui-monospace,monospace">
+          <span>🚩 ₹15K Start</span>
+          <span>🛡️ ₹25K Cushion</span>
+          <span>🚀 ₹50K Halfway</span>
+          <span>💎 ₹75K Sprint</span>
+          <span>🏆 ₹100K Rich Guy</span>
+        </div>
+      </div>
+
+      <!-- Challenge Metrics Grid -->
+      <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px">
+        <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+          <div class="k" style="font-size:9.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.08em">Risk Per Trade</div>
+          <div id="chRiskTrade" style="font-size:15px;font-weight:700;margin-top:2px;color:var(--ink)">₹225.00</div>
+          <div id="chRiskSub" style="font-size:10px;color:var(--ink-2);margin-top:2px">1.5% of equity (Dynamic)</div>
+        </div>
+        <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+          <div class="k" style="font-size:9.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.08em">Daily Loss Limit</div>
+          <div id="chDailyStop" style="font-size:15px;font-weight:700;margin-top:2px;color:var(--bad)">-₹525.00</div>
+          <div id="chDailyStopSub" style="font-size:10px;color:var(--ink-2);margin-top:2px">3.5% hard stop cap</div>
+        </div>
+        <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+          <div class="k" style="font-size:9.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.08em">Max Positions</div>
+          <div id="chMaxPos" style="font-size:15px;font-weight:700;margin-top:2px;color:var(--ink)">2 concurrent</div>
+          <div id="chPosCap" style="font-size:10px;color:var(--ink-2);margin-top:2px">Max pos: ₹45,000</div>
+        </div>
+        <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:8px 10px">
+          <div class="k" style="font-size:9.5px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.08em">Drawdown &amp; Streak</div>
+          <div id="chDrawdown" style="font-size:15px;font-weight:700;margin-top:2px;color:var(--good)">0.0% DD</div>
+          <div id="chStreak" style="font-size:10px;color:var(--ink-2);margin-top:2px">0 losses today · Normal</div>
+        </div>
+      </div>
+
+      <!-- AI Survival Agent Directive Callout -->
+      <div id="chAiDirectiveBox" style="background:var(--cell);border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:6px;padding:9px 12px;font-size:12px">
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:3px">
+          <span style="font-weight:700;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--accent)">🤖 AI Survival Agent Directive</span>
+          <span id="chDirectiveTime" style="font-size:10px;color:var(--ink-3);font-family:ui-monospace,monospace">Just now</span>
+        </div>
+        <div id="chDirectiveText" style="color:var(--ink);line-height:1.4">Loading survival directive…</div>
+        <div id="chDirectiveSub" style="margin-top:4px;font-size:11px;color:var(--ink-2)"></div>
+      </div>
     </div>
   </section>
 
@@ -600,10 +711,85 @@ function render(){
   });
   sel.onchange=()=>{selDate=sel.value; load();};
 
+  renderChallenge(d.challenge);
   renderTiles(d); renderChart(d); renderBreakdown(d); renderCfg(d);
   renderTrades(d); renderRej(d); renderAlog(d);
   const rep=document.getElementById("report");
   rep.textContent = d.report || "No journal report for this date yet — run: python -m trading.agents.eod_journal";
+}
+
+function renderChallenge(ch){
+  const p = document.getElementById("challengePanel");
+  if(!ch){ if(p) p.style.display="none"; return; }
+  p.style.display = "";
+
+  document.getElementById("chPhaseBadge").textContent = (ch.phase || "Phase 1").toUpperCase();
+  
+  const hBadge = document.getElementById("chHealthBadge");
+  const health = ch.survival_health ?? 100;
+  hBadge.textContent = `${health.toFixed(1)}% SURVIVAL HEALTH · ${ch.survival_status}`;
+  if(health >= 80){
+    hBadge.style.background = "var(--good-soft, rgba(16,185,129,0.15))";
+    hBadge.style.color = "var(--good)";
+  } else if(health >= 50){
+    hBadge.style.background = "var(--warn-soft, rgba(245,158,11,0.15))";
+    hBadge.style.color = "var(--warn)";
+  } else {
+    hBadge.style.background = "var(--bad-soft, rgba(239,68,68,0.15))";
+    hBadge.style.color = "var(--bad)";
+  }
+
+  const eq = ch.current_equity ?? 15000;
+  document.getElementById("chEquity").textContent = "₹" + fmt(eq);
+  
+  const roiElem = document.getElementById("chRoiMultiple");
+  const roi = ch.roi_pct ?? 0;
+  const mult = ch.multiple ?? 1;
+  const roiSign = roi >= 0 ? "+" : "";
+  roiElem.textContent = `${roiSign}${roi.toFixed(2)}% · ${mult.toFixed(2)}x Multiple`;
+  roiElem.className = roi >= 0 ? "up" : "down";
+
+  document.getElementById("chDistance").textContent = `₹${fmt(ch.distance_to_target)} to ₹1 Lakh Goal`;
+  const pct = ch.progress_pct ?? 0;
+  document.getElementById("chPct").textContent = `${pct.toFixed(1)}%`;
+  document.getElementById("chProgressBar").style.width = `${Math.min(100, Math.max(0, pct))}%`;
+
+  document.getElementById("chRiskTrade").textContent = `₹${fmt(ch.risk_per_trade)}`;
+  document.getElementById("chRiskSub").textContent = `${ch.risk_pct}% of equity (${ch.phase_num === 1 ? 'Shielded' : 'Compounding'})`;
+
+  document.getElementById("chDailyStop").textContent = `-₹${fmt(Math.abs(ch.daily_loss_limit))}`;
+  document.getElementById("chDailyStopSub").textContent = `${ch.phase_num === 1 ? '3.5%' : '4.0%'} hard stop cap`;
+
+  document.getElementById("chMaxPos").textContent = `${ch.max_open_positions} concurrent`;
+  document.getElementById("chPosCap").textContent = `Max pos value: ₹${fmt(ch.max_position_value, 0)}`;
+
+  const dd = ch.drawdown_pct ?? 0;
+  const ddElem = document.getElementById("chDrawdown");
+  ddElem.textContent = `${dd.toFixed(1)}% DD`;
+  ddElem.className = dd > 8 ? "down" : dd > 4 ? "warn" : "up";
+
+  const stElem = document.getElementById("chStreak");
+  if(ch.circuit_breaker_active){
+    stElem.textContent = `🛑 CIRCUIT BREAKER: ${ch.circuit_breaker_reason || 'Halted'}`;
+    stElem.style.color = "var(--bad)";
+  } else if(ch.defense_mode){
+    stElem.textContent = `🛡️ DEFENSE ACTIVE: Risk reduced 50%`;
+    stElem.style.color = "var(--warn)";
+  } else {
+    stElem.textContent = `${ch.today_losses_count || 0} losses today · Normal Operations`;
+    stElem.style.color = "var(--ink-2)";
+  }
+
+  // AI Directive
+  document.getElementById("chDirectiveText").textContent = ch.ai_directive || "Survival Agent active: maintaining capital discipline.";
+  document.getElementById("chDirectiveTime").textContent = ch.ai_directive_time ? `Updated ${ch.ai_directive_time.split(' ')[1]}` : "Active";
+  
+  const detail = ch.ai_directive_detail;
+  if(detail && detail.key_focus){
+    document.getElementById("chDirectiveSub").textContent = `Key Focus: ${detail.key_focus} · Action: ${detail.risk_action}`;
+  } else {
+    document.getElementById("chDirectiveSub").textContent = "";
+  }
 }
 
 function renderTiles(d){
@@ -618,8 +804,12 @@ function renderTiles(d){
     box.append(c);
   };
   const pnl=s.net_pnl??0;
-  mk("Net P&L (INR)", fmt(pnl), {hero:true, dir:pnl>=0?"up":"down",
-     delta:(pnl>=0?"▲":"▼")+" vs start of day"});
+  let pnlDelta = (pnl>=0?"▲":"▼")+" vs start of day";
+  if(s.open > 0 && s.unrealized_pnl != null){
+    const uSign = s.unrealized_pnl >= 0 ? "+" : "";
+    pnlDelta = `Realized: ₹${fmt(s.realized_pnl)} · Live MTM: ${uSign}₹${fmt(s.unrealized_pnl)}`;
+  }
+  mk("Net P&L (INR)", fmt(pnl), {hero:true, dir:pnl>=0?"up":"down", delta: pnlDelta});
   mk("Win rate", s.win_rate==null?"—":fmt(s.win_rate,1)+"%");
   mk("Trades", String(s.trades)+(s.open?` (${s.open} open)`:""));
   mk("Charges (INR)", fmt(s.charges));
@@ -667,7 +857,10 @@ function renderTrades(d){
       exitTd.textContent = fmt(tr.exit_price);
     } else {
       const b = el("span","badge buy","OPEN");
-      b.style.marginRight = "6px";
+      b.style.marginRight = "5px";
+      const ltpSpan = el("span", "mono", tr.current_price != null ? `₹${fmt(tr.current_price)} ` : "");
+      ltpSpan.style.fontSize = "11px";
+      ltpSpan.style.marginRight = "5px";
       const cBtn = el("button","btn sm","Close");
       cBtn.style.padding = "2px 6px";
       cBtn.style.fontSize = "10.5px";
@@ -684,13 +877,27 @@ function renderTrades(d){
           if(j.ok){ load(); } else { alert(j.error || "Failed to close trade"); cBtn.disabled=false; cBtn.textContent="Close"; }
         }catch(e){ alert("Error: "+e); cBtn.disabled=false; cBtn.textContent="Close"; }
       };
-      exitTd.append(b, cBtn);
+      exitTd.append(b, ltpSpan, cBtn);
     }
     row.append(exitTd);
-    const pnl=el("td","num "+((tr.pnl??0)>=0?"pnl-pos":"pnl-neg"),
-                 tr.pnl==null?"—":fmt(tr.pnl));
-    row.append(pnl);
-    row.append(el("td","num",tr.charges==null?"—":fmt(tr.charges)));
+
+    let pnlVal = isClosed ? tr.pnl : tr.unrealized_pnl;
+    const pnlTd = el("td","num "+((pnlVal??0)>=0?"pnl-pos":"pnl-neg"));
+    if(isClosed){
+      pnlTd.textContent = pnlVal==null ? "—" : fmt(pnlVal);
+    } else {
+      if(pnlVal != null){
+        const sign = pnlVal >= 0 ? "+" : "";
+        pnlTd.innerHTML = `<b>${sign}${fmt(pnlVal)}</b> <span style="font-size:9.5px;padding:1px 4px;border-radius:3px;font-weight:600;background:${pnlVal>=0?'rgba(16,185,129,0.2)':'rgba(239,68,68,0.2)'};color:${pnlVal>=0?'#10b981':'#ef4444'}">LIVE</span>`;
+      } else {
+        pnlTd.textContent = "—";
+      }
+    }
+    row.append(pnlTd);
+
+    const chgVal = isClosed ? tr.charges : tr.est_charges;
+    const chgTd = el("td", "num", chgVal==null ? "—" : (isClosed ? fmt(chgVal) : `~${fmt(chgVal)}`));
+    row.append(chgTd);
     row.append(el("td","small",tr.strategy_id||"—"));
     const vtd=el("td"); vtd.append(verdictBadge(tr.agent_verdict));
     if(tr.agent_confidence!=null) vtd.append(el("span","small"," "+Number(tr.agent_confidence).toFixed(2)));
@@ -974,6 +1181,43 @@ async function loadQuotes(){
   }
 }
 
+const btnRecalcChallenge = document.getElementById("btnRecalcChallenge");
+if (btnRecalcChallenge) {
+  btnRecalcChallenge.onclick = async () => {
+    btnRecalcChallenge.disabled = true;
+    btnRecalcChallenge.textContent = "Updating…";
+    try {
+      await fetch("/api/challenge/recalc");
+      await load();
+    } catch(e) {
+      console.warn("Recalc challenge error:", e);
+    } finally {
+      btnRecalcChallenge.disabled = false;
+      btnRecalcChallenge.textContent = "Refresh Stats";
+    }
+  };
+}
+
+const btnResetChallenge = document.getElementById("btnResetChallenge");
+if (btnResetChallenge) {
+  btnResetChallenge.onclick = async () => {
+    if (!confirm("Are you sure you want to reset the 15k to 1 Lakh Challenge starting fresh from ₹15,000 today?")) {
+      return;
+    }
+    btnResetChallenge.disabled = true;
+    btnResetChallenge.textContent = "Resetting…";
+    try {
+      await fetch("/api/challenge/reset", {method: "POST"});
+      await load();
+    } catch(e) {
+      alert("Error resetting challenge: " + e);
+    } finally {
+      btnResetChallenge.disabled = false;
+      btnResetChallenge.textContent = "Reset to ₹15k";
+    }
+  };
+}
+
 load();
 loadFno();
 loadQuotes();
@@ -1013,8 +1257,17 @@ class Handler(BaseHTTPRequestHandler):
             body = json.dumps(get_data(q.get("date", [None])[0]),
                               default=str).encode()
             self._send(200, "application/json", body)
+        elif url.path == "/api/challenge/recalc":
+            try:
+                from trading.challenge import recalculate_state
+                st = recalculate_state()
+                self._send(200, "application/json", json.dumps(st, default=str).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
         elif url.path == "/":
             self._send(200, "text/html; charset=utf-8", PAGE.encode())
+        elif url.path == "/favicon.ico":
+            self._send(204, "image/x-icon", b"")
         else:
             self._send(404, "text/plain", b"not found")
 
@@ -1035,6 +1288,13 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/telegram-alert":
             res = _handle_telegram_alert(body)
             self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res).encode())
+        elif url.path == "/api/challenge/reset":
+            try:
+                from trading.challenge import reset_challenge
+                st = reset_challenge()
+                self._send(200, "application/json", json.dumps({"ok": True, "state": st}, default=str).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
         else:
             self._send(404, "text/plain", b"not found")
 

@@ -1,0 +1,380 @@
+<title>TradingView Charts with Entry/SL/Target</title>
+<style>
+:root {
+  --bg: #0f0e0c;
+  --bg-card: #1a1815;
+  --bg-elevated: #232019;
+  --fg: #f5f5f5;
+  --fg-muted: #8b8b8b;
+  --border: #2e2a24;
+  --accent: #3b9eff;
+  --accent-soft: rgba(59, 158, 255, 0.12);
+  --good: #22c55e;
+  --good-soft: rgba(34, 197, 94, 0.12);
+  --bad: #ef4444;
+  --bad-soft: rgba(239, 68, 68, 0.12);
+  --warn: #eab308;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --bg: #faf9f7;
+    --bg-card: #ffffff;
+    --bg-elevated: #f5f4f2;
+    --fg: #1a1a1a;
+    --fg-muted: #666666;
+    --border: #e5e3df;
+    --accent: #0066cc;
+    --accent-soft: rgba(0, 102, 204, 0.08);
+    --good: #16a34a;
+    --good-soft: rgba(22, 163, 74, 0.08);
+    --bad: #dc2626;
+    --bad-soft: rgba(220, 38, 38, 0.08);
+  }
+}
+
+:root[data-theme="light"] {
+  --bg: #faf9f7;
+  --bg-card: #ffffff;
+  --bg-elevated: #f5f4f2;
+  --fg: #1a1a1a;
+  --fg-muted: #666666;
+  --border: #e5e3df;
+  --accent: #0066cc;
+  --accent-soft: rgba(0, 102, 204, 0.08);
+  --good: #16a34a;
+  --good-soft: rgba(22, 163, 74, 0.08);
+  --bad: #dc2626;
+  --bad-soft: rgba(220, 38, 38, 0.08);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+body {
+  background: var(--bg);
+  color: var(--fg);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  line-height: 1.5;
+  padding: 20px;
+}
+
+.container { max-width: 920px; margin: 0 auto; }
+
+/* Header */
+.header {
+  display: flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 20px;
+  flex-wrap: wrap;
+}
+
+.symbol { font-size: 26px; font-weight: 700; letter-spacing: -0.02em; }
+.price { font-size: 22px; font-weight: 700; font-family: ui-monospace, SFMono-Regular, monospace; }
+.change { font-size: 13px; font-weight: 600; color: var(--good); }
+.badge {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  padding: 5px 10px;
+  border-radius: 6px;
+  background: var(--good-soft);
+  color: var(--good);
+  border: 1px solid currentColor;
+}
+
+/* Chart Card */
+.chart-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  margin-bottom: 16px;
+}
+
+.chart-area {
+  height: 420px;
+  position: relative;
+}
+
+/* TradingView widget */
+.tradingview-widget-container { height: 100%; width: 100%; }
+
+/* Levels Strip */
+.levels-strip {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--border);
+  border-top: 1px solid var(--border);
+}
+
+.level-cell {
+  background: var(--bg-elevated);
+  padding: 12px 14px;
+  text-align: center;
+}
+
+.level-label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--fg-muted);
+  margin-bottom: 3px;
+}
+
+.level-price {
+  font-size: 16px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+
+.level-price.entry { color: var(--accent); }
+.level-price.stop { color: var(--bad); }
+.level-price.target { color: var(--good); }
+
+.level-note {
+  font-size: 10px;
+  color: var(--fg-muted);
+  margin-top: 2px;
+}
+
+/* Trade Plan Summary */
+.plan-card {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+
+.plan-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+  margin-bottom: 12px;
+}
+
+.plan-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 10px;
+}
+
+.plan-item {
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  padding: 10px 12px;
+}
+
+.plan-item .label {
+  font-size: 9px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--fg-muted);
+}
+
+.plan-item .value {
+  font-size: 15px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  margin-top: 2px;
+}
+
+.plan-item.entry .value { color: var(--accent); }
+.plan-item.stop .value { color: var(--bad); }
+.plan-item.target .value { color: var(--good); }
+
+.plan-item .sub {
+  font-size: 10px;
+  color: var(--fg-muted);
+  margin-top: 1px;
+}
+
+/* R:R Bar */
+.rr-section {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--bg-elevated);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 10px;
+}
+
+.rr-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--fg-muted);
+  min-width: 90px;
+}
+
+.rr-track {
+  flex: 1;
+  height: 6px;
+  background: var(--border);
+  border-radius: 3px;
+  position: relative;
+  overflow: hidden;
+}
+
+.rr-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--bad) 0%, var(--warn) 50%, var(--good) 100%);
+  border-radius: 3px;
+}
+
+.rr-value {
+  font-size: 14px;
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  color: var(--good);
+  min-width: 50px;
+  text-align: right;
+}
+
+/* Info Section */
+.info {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  font-size: 13px;
+  color: var(--fg-muted);
+  line-height: 1.6;
+}
+
+.info h3 {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--fg);
+  margin-bottom: 6px;
+}
+
+.info ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
+.info li { margin: 3px 0; }
+.info code { background: var(--bg-elevated); padding: 2px 5px; border-radius: 3px; font-size: 12px; }
+
+@media (max-width: 600px) {
+  .levels-strip, .plan-grid { grid-template-columns: repeat(2, 1fr); }
+  .chart-area { height: 320px; }
+}
+</style>
+
+<div class="container">
+  <div class="header">
+    <span class="symbol">HYUNDAI</span>
+    <span class="price">₹2,213.10</span>
+    <span class="change">+1.41%</span>
+    <span class="badge">BREAKOUT</span>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-area">
+      <div class="tradingview-widget-container">
+        <div id="tv-chart"></div>
+      </div>
+    </div>
+    <div class="levels-strip">
+      <div class="level-cell">
+        <div class="level-label">Entry Zone</div>
+        <div class="level-price entry">₹2,200</div>
+        <div class="level-note">Buy band</div>
+      </div>
+      <div class="level-cell">
+        <div class="level-label">Stop Loss</div>
+        <div class="level-price stop">₹2,185</div>
+        <div class="level-note">-1.3%</div>
+      </div>
+      <div class="level-cell">
+        <div class="level-label">Target 1</div>
+        <div class="level-price target">₹2,240</div>
+        <div class="level-note">1:1.5</div>
+      </div>
+      <div class="level-cell">
+        <div class="level-label">Target 2</div>
+        <div class="level-price target">₹2,260</div>
+        <div class="level-note">1:2.5</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="plan-card">
+    <div class="plan-title">Trade Plan Summary</div>
+    <div class="plan-grid">
+      <div class="plan-item entry">
+        <div class="label">Entry Zone</div>
+        <div class="value">₹2,200 - ₹2,210</div>
+        <div class="sub">Buy inside band</div>
+      </div>
+      <div class="plan-item stop">
+        <div class="label">Stop Loss</div>
+        <div class="value">₹2,185</div>
+        <div class="sub">Below OR low</div>
+      </div>
+      <div class="plan-item target">
+        <div class="label">Target 1</div>
+        <div class="value">₹2,240</div>
+        <div class="sub">+1.5%</div>
+      </div>
+      <div class="plan-item target">
+        <div class="label">Target 2</div>
+        <div class="value">₹2,260</div>
+        <div class="sub">+2.5%</div>
+      </div>
+    </div>
+    <div class="rr-section">
+      <span class="rr-label">Risk : Reward</span>
+      <div class="rr-track">
+        <div class="rr-fill" style="width: 71%;"></div>
+      </div>
+      <span class="rr-value">1 : 2.5</span>
+    </div>
+  </div>
+
+  <div class="info">
+    <h3>How to add this to your scanner</h3>
+    <p style="margin-bottom: 8px;">This shows TradingView charts with entry/stop/target overlays. To integrate into your F&O scanner at <code>localhost:8788</code>:</p>
+    <ul>
+      <li>Each signal card gets an embedded TradingView widget for the symbol</li>
+      <li>Entry zone, stop loss, and targets are drawn as horizontal lines</li>
+      <li>Users can zoom, pan, and add their own indicators</li>
+      <li>The levels legend below the chart shows exact prices</li>
+    </ul>
+  </div>
+</div>
+
+<script src="https://s3.tradingview.com/tv.js"></script>
+<script>
+new TradingView.widget({
+  autosize: true,
+  symbol: "NSE:HYUNDAI",
+  interval: "5",
+  timezone: "Asia/Kolkata",
+  theme: "dark",
+  style: "1",
+  locale: "en",
+  toolbar_bg: "#1a1815",
+  enable_publishing: false,
+  hide_top_toolbar: false,
+  hide_legend: false,
+  save_image: false,
+  container_id: "tv-chart",
+  studies: ["MASimple@tv-basicstudies"],
+  overrides: {
+    "paneProperties.backgroundType": "solid",
+    "paneProperties.background": "#1a1815",
+    "paneProperties.vertGridProperties.color": "#2e2a24",
+    "paneProperties.horzGridProperties.color": "#2e2a24"
+  }
+});
+</script>

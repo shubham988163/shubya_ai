@@ -20,6 +20,9 @@ from trading.config import (
     SLIPPAGE_PCT,
     TODAY_CONFIG_PATH,
     FALLBACK_DAY_CONFIG,
+    TRADING_MODE,
+    FYERS_APP_ID,
+    FYERS_TOKEN_PATH,
 )
 from trading.ledger import Ledger
 
@@ -72,49 +75,60 @@ def load_day_config() -> dict:
 
 
 class ExecutionRouter:
-    def __init__(self, mode: str = "paper", ledger: Ledger | None = None,
+    def __init__(self, mode: str | None = None, ledger: Ledger | None = None,
                  get_ltp=None):
         """
-        mode:    "paper" or "live". Live requires kiteconnect + static IP +
-                 broker Algo-ID tagging — see README before ever flipping this.
-        get_ltp: callable(symbol) -> float. In paper mode this is your live
-                 tick source; the demo passes a stub.
+        mode:    "paper" or "live". Defaults to TRADING_MODE from config.py.
+                 Paper mode is safe simulation. Live mode places real orders on Fyers.
+        get_ltp: callable(symbol) -> float. Live tick price source.
         """
+        mode = mode or TRADING_MODE
         assert mode in ("paper", "live")
         self.mode = mode
         self.ledger = ledger or Ledger()
         self.get_ltp = get_ltp
         self.rate_limiter = RateLimiter()
         self.day_config = load_day_config()
-        self.kite = None  # set externally in live mode
+        self.kite = None
 
     # --- risk kernel: ALWAYS runs first, both modes ---
 
     def risk_check(self, signal: dict) -> str | None:
         """Return a rejection reason, or None if the signal passes."""
+        # 1. 15k to 1 Lakh Challenge Survival Checks
+        try:
+            from trading.challenge import can_enter_trade, get_challenge_state
+            can_enter, reason = can_enter_trade(signal.get("symbol"))
+            if not can_enter:
+                return f"challenge_survival_halt ({reason})"
+            challenge_state = get_challenge_state()
+            active_daily_limit = challenge_state.get("daily_loss_limit", DAILY_LOSS_LIMIT)
+            active_max_open = challenge_state.get("max_open_positions", MAX_OPEN_POSITIONS)
+            active_max_pos_val = challenge_state.get("max_position_value", MAX_POSITION_VALUE)
+        except Exception:
+            active_daily_limit = DAILY_LOSS_LIMIT
+            active_max_open = MAX_OPEN_POSITIONS
+            active_max_pos_val = MAX_POSITION_VALUE
+
         if signal["symbol"] in self.day_config.get("blocked_symbols", []):
             return f"symbol_blocked_by_premarket_agent ({self.day_config.get('rationale', '')})"
 
         if self.day_config["risk_multiplier"] <= 0:
             return "risk_multiplier_zero (pre-market halt)"
 
-        if self.ledger.day_realized_pnl() <= DAILY_LOSS_LIMIT:
-            return "daily_loss_limit_hit"
+        if self.ledger.day_realized_pnl() <= active_daily_limit:
+            return f"daily_loss_limit_hit ({self.ledger.day_realized_pnl():.2f} <= {active_daily_limit:.2f})"
 
         today = datetime.now(IST).strftime("%Y-%m-%d")
         open_positions = [t for t in self.ledger.open_trades() if t.get("date") == today]
-        if (len(open_positions) >= MAX_OPEN_POSITIONS
+        if (len(open_positions) >= active_max_open
                 and signal["symbol"] not in {t["symbol"] for t in open_positions}):
-            return f"max_open_positions ({len(open_positions)}/{MAX_OPEN_POSITIONS})"
+            return f"max_open_positions ({len(open_positions)}/{active_max_open})"
 
         position_value = signal["qty"] * signal["price"]
-        # Hard capital cap, never scaled: with a small account, scaling the
-        # cap priced out every symbol on cautious days. The agent's risk
-        # multiplier instead scales RISK_PER_TRADE in the engine's sizing
-        # (and 0 still halts, above) — it can shrink size, never grow it.
         existing = self.ledger.open_position_value(signal["symbol"])
-        if existing + position_value > MAX_POSITION_VALUE:
-            return f"max_position_value (cap={MAX_POSITION_VALUE:.0f}, would_be={existing + position_value:.0f})"
+        if existing + position_value > active_max_pos_val:
+            return f"max_position_value (cap={active_max_pos_val:.0f}, would_be={existing + position_value:.0f})"
 
         return None
 
@@ -142,13 +156,63 @@ class ExecutionRouter:
             fill = self.simulate_fill(signal)
             return self.ledger.record_entry(signal, fill_price=fill, mode="paper")
 
-        # live mode: static IP + Algo-ID tagging handled by broker for
-        # sub-10-OPS personal use. Requires self.kite to be configured.
-        raise NotImplementedError(
-            "Live mode is intentionally not wired up. Complete the go-live "
-            "checklist in README.md (static IP, OAuth automation, broker "
-            "Algo-ID confirmation) before implementing kite.place_order()."
-        )
+        # Live mode: execute directly via Fyers API v3
+        return self._execute_fyers_live(signal)
+
+    def _execute_fyers_live(self, signal: dict) -> int | None:
+        """Execute a real-money order via Fyers API v3."""
+        try:
+            from fyers_apiv3 import fyersModel
+            from trading.fno.fyers import load_token
+            token, _ = load_token()
+            if not token:
+                self.last_rejection = "fyers_token_missing (please authenticate via /api/fyers/login)"
+                self.ledger.record_rejection(signal, self.last_rejection)
+                print(f"[LIVE FYERS ERROR] Cannot trade live: {self.last_rejection}")
+                return None
+
+            fyers = fyersModel.FyersModel(client_id=FYERS_APP_ID, token=token, is_async=False, log_path="")
+
+            sym = str(signal["symbol"]).strip().upper()
+            if not (sym.startswith("NSE:") or sym.startswith("BSE:") or sym.startswith("MCX:")):
+                fyers_sym = f"NSE:{sym}-EQ"
+            else:
+                fyers_sym = sym
+
+            side = 1 if str(signal["side"]).upper() == "BUY" else -1
+            order_data = {
+                "symbol": fyers_sym,
+                "qty": int(signal["qty"]),
+                "type": 2,  # Market order for immediate fill
+                "side": side,
+                "productType": "INTRADAY",
+                "limitPrice": 0,
+                "stopPrice": 0,
+                "validity": "DAY",
+                "disclosedQty": 0,
+                "offlineOrder": False,
+                "stopLoss": 0,
+                "takeProfit": 0
+            }
+
+            resp = fyers.place_order(data=order_data)
+            if isinstance(resp, dict) and resp.get("s") == "ok":
+                order_id = resp.get("id")
+                ltp = self.get_ltp(signal["symbol"]) if self.get_ltp else signal["price"]
+                trade_id = self.ledger.record_entry(signal, fill_price=ltp, mode="live")
+                print(f"[LIVE FYERS SUCCESS] Real order placed: {fyers_sym} x{signal['qty']} (Fyers ID: {order_id}) -> Ledger #{trade_id}")
+                return trade_id
+            else:
+                err_msg = resp.get("message") if isinstance(resp, dict) else str(resp)
+                self.last_rejection = f"fyers_broker_rejection: {err_msg}"
+                self.ledger.record_rejection(signal, self.last_rejection)
+                print(f"[LIVE FYERS REJECTED] Broker rejected: {err_msg}")
+                return None
+        except Exception as exc:
+            self.last_rejection = f"fyers_exception: {exc}"
+            self.ledger.record_rejection(signal, self.last_rejection)
+            print(f"[LIVE FYERS ERROR] Exception: {exc}")
+            return None
 
     def simulate_fill(self, signal: dict) -> float:
         ltp = self.get_ltp(signal["symbol"]) if self.get_ltp else signal["price"]

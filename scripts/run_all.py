@@ -224,6 +224,24 @@ class ServiceManager:
                 LOGS_DIR / "strategy.log"
             )
 
+    def ensure_fno_auto_trader(self) -> None:
+        trader_pid = self.pids.get("fno_auto_trader")
+        if not trader_pid or not is_pid_alive(trader_pid):
+            self.start_process(
+                "fno_auto_trader",
+                [PYTHON, "-u", "-m", "trading.fno.auto_trader"],
+                LOGS_DIR / "fno_auto_trader.log"
+            )
+
+    def ensure_survival_agent(self) -> None:
+        surv_pid = self.pids.get("survival_agent")
+        if not surv_pid or not is_pid_alive(surv_pid):
+            self.start_process(
+                "survival_agent",
+                [PYTHON, "-u", "-m", "trading.agents.survival_agent", "--loop"],
+                LOGS_DIR / "survival_agent.log"
+            )
+
     def run_premarket(self) -> None:
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         if self.premarket_done_today == today_str:
@@ -260,9 +278,11 @@ class ServiceManager:
 
         # Initial launch
         self.ensure_dashboard()
+        self.ensure_survival_agent()
         if market_open_now:
             self.ensure_supervisor()
             self.ensure_strategy()
+            self.ensure_fno_auto_trader()
 
         time.sleep(3)
 
@@ -272,6 +292,7 @@ class ServiceManager:
             "🚀 RanchoTrade Auto-Started",
             f"Laptop is ON · Session: {status_text}\n"
             f"• Dashboard: http://localhost:8787\n"
+            f"• 15k->1 Lakh Challenge: Survival Agent Active\n"
             f"• Status: All background services operational"
         )
 
@@ -284,8 +305,9 @@ class ServiceManager:
                 hhmm = now.strftime("%H:%M")
                 is_weekday = now.weekday() < 5
 
-                # 1. Always keep dashboard alive
+                # 1. Always keep dashboard & survival agent alive
                 self.ensure_dashboard()
+                self.ensure_survival_agent()
 
                 # 2. Weekday trading schedule
                 if is_weekday:
@@ -297,6 +319,7 @@ class ServiceManager:
                     if "09:15" <= hhmm < "15:30":
                         self.ensure_supervisor()
                         self.ensure_strategy()
+                        self.ensure_fno_auto_trader()
 
                     # 15:35 PM: EOD Journal
                     if "15:35" <= hhmm < "16:15":

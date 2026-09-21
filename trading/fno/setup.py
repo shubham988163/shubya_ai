@@ -98,11 +98,13 @@ def _next_resistance_above(price: float, levels) -> float | None:
     return above[0] if above else None
 
 
-def read_structure(df: pd.DataFrame, day, lv: Levels) -> Structure:
-    """Classify today's price action against the resistance level."""
+def read_structure(df: pd.DataFrame, day, lv: Levels, direction: str = "BUY") -> Structure:
+    """Classify today's price action against the key level."""
     day_df = ind.session_of(df, day)
     post = ind.after_opening_range(day_df)
-    R, atr_val = lv.resistance, lv.atr
+    is_long = direction == "BUY"
+    L = lv.resistance if is_long else (lv.support or lv.or_low)
+    atr_val = lv.atr
     notes: list[str] = []
 
     hh, hl = ind.higher_highs_lows(day_df)
@@ -112,16 +114,18 @@ def read_structure(df: pd.DataFrame, day, lv: Levels) -> Structure:
     breakout_time = None
     breakout_vol_mult = None
     breakout_idx = None
-    trigger = R + C.BREAKOUT_BUFFER_ATR * atr_val
+    
+    if is_long:
+        trigger = L + C.BREAKOUT_BUFFER_ATR * atr_val
+    else:
+        trigger = L - C.BREAKOUT_BUFFER_ATR * atr_val
 
     for i, (ts, bar) in enumerate(post.iterrows()):
-        if float(bar["Close"]) > trigger:
+        close = float(bar["Close"])
+        if (is_long and close > trigger) or (not is_long and close < trigger):
             breakout = True
             breakout_time = ts.to_pydatetime()
             breakout_idx = i
-            # Baseline is the bars *before* the breakout — including the
-            # breakout bar (or later ones) in its own baseline would flatten
-            # exactly the expansion this is trying to measure.
             prior = day_df["Volume"][day_df.index < ts]
             base = float(prior.mean()) if len(prior) else 0.0
             breakout_vol_mult = float(bar["Volume"]) / base if base > 0 else None
@@ -129,35 +133,47 @@ def read_structure(df: pd.DataFrame, day, lv: Levels) -> Structure:
 
     holding = False
     retested = False
-    retest_low = None
+    retest_extreme = None
     failed = False
 
     if breakout:
         after = post.iloc[breakout_idx:]
-        holding = (lv.price > R
-                   and float(after["Close"].min()) > R - C.HOLD_TOLERANCE_ATR * atr_val)
-        failed = lv.price < R - C.HOLD_TOLERANCE_ATR * atr_val
-        # A retest is a bar that dips back to the level and closes above it.
-        pullbacks = after.iloc[1:]
-        band = R + C.RETEST_TOLERANCE_ATR * atr_val
-        touched = pullbacks[(pullbacks["Low"] <= band) & (pullbacks["Close"] > R)]
-        if not touched.empty:
-            retested = True
-            retest_low = float(touched["Low"].min())
-            if retest_low < R - C.HOLD_TOLERANCE_ATR * atr_val:
-                notes.append("retest dipped below the breakout level before recovering")
+        if is_long:
+            holding = (lv.price > L and float(after["Close"].min()) > L - C.HOLD_TOLERANCE_ATR * atr_val)
+            failed = lv.price < L - C.HOLD_TOLERANCE_ATR * atr_val
+            pullbacks = after.iloc[1:]
+            band = L + C.RETEST_TOLERANCE_ATR * atr_val
+            touched = pullbacks[(pullbacks["Low"] <= band) & (pullbacks["Close"] > L)]
+            if not touched.empty:
+                retested = True
+                retest_extreme = float(touched["Low"].min())
+                if retest_extreme < L - C.HOLD_TOLERANCE_ATR * atr_val:
+                    notes.append("retest dipped below the breakout level before recovering")
+        else:
+            holding = (lv.price < L and float(after["Close"].max()) < L + C.HOLD_TOLERANCE_ATR * atr_val)
+            failed = lv.price > L + C.HOLD_TOLERANCE_ATR * atr_val
+            pullbacks = after.iloc[1:]
+            band = L - C.RETEST_TOLERANCE_ATR * atr_val
+            touched = pullbacks[(pullbacks["High"] >= band) & (pullbacks["Close"] < L)]
+            if not touched.empty:
+                retested = True
+                retest_extreme = float(touched["High"].max())
+                if retest_extreme > L + C.HOLD_TOLERANCE_ATR * atr_val:
+                    notes.append("retest popped above the breakdown level before rejecting")
+
         if breakout_vol_mult is not None and breakout_vol_mult < C.WEAK_VOL_MULT:
-            notes.append(f"breakout bar volume only {breakout_vol_mult:.1f}x the "
-                         "prior-bar average")
+            notes.append(f"breakout bar volume only {breakout_vol_mult:.1f}x the prior-bar average")
 
     # Rejection: tagged the level repeatedly but never closed through it.
-    rejection = (not breakout
-                 and float(day_df["High"].max()) >= R
-                 and lv.price < R)
+    if is_long:
+        rejection = (not breakout and float(day_df["High"].max()) >= L and lv.price < L)
+        extended = ((lv.price - L) > C.EXTENDED_ATR * atr_val
+                    or (lv.vwap > 0 and (lv.price - lv.vwap) / lv.vwap * 100 > C.EXTENDED_VWAP_PCT))
+    else:
+        rejection = (not breakout and float(day_df["Low"].min()) <= L and lv.price > L)
+        extended = ((L - lv.price) > C.EXTENDED_ATR * atr_val
+                    or (lv.vwap > 0 and (lv.vwap - lv.price) / lv.vwap * 100 > C.EXTENDED_VWAP_PCT))
 
-    extended = ((lv.price - R) > C.EXTENDED_ATR * atr_val
-                or (lv.vwap > 0
-                    and (lv.price - lv.vwap) / lv.vwap * 100 > C.EXTENDED_VWAP_PCT))
     if extended:
         notes.append("price is extended from the breakout level / VWAP — "
                      "entering here is chasing")
@@ -166,12 +182,12 @@ def read_structure(df: pd.DataFrame, day, lv: Levels) -> Structure:
         higher_highs=hh, higher_lows=hl, consolidating=consolidating,
         breakout=breakout, breakout_time=breakout_time,
         breakout_vol_mult=breakout_vol_mult, holding=holding,
-        retested=retested, retest_low=retest_low, failed_breakout=failed,
+        retested=retested, retest_low=retest_extreme, failed_breakout=failed,
         rejection=rejection, extended=extended, notes=notes,
     )
 
 
-def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
+def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure, direction: str = "BUY"
                 ) -> tuple[Trade | None, list[tuple[str, str]]]:
     """Entry zone, structural stop and 1:2 / 1:3 targets.
 
@@ -188,46 +204,63 @@ def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
         return None, [("structure",
                        "breakout not holding — price is back at/below the level")]
 
-    R, atr_val = lv.resistance, lv.atr
-    entry_low = R
-    entry_high = R + 0.40 * atr_val
-    entry = min(max(lv.price, entry_low), entry_high)
+    is_long = direction == "BUY"
+    L, atr_val = (lv.resistance if is_long else (lv.support or lv.or_low)), lv.atr
+    
+    if is_long:
+        entry_low = L
+        entry_high = L + 0.40 * atr_val
+        entry = min(max(lv.price, entry_low), entry_high)
+    else:
+        entry_high = L
+        entry_low = L - 0.40 * atr_val
+        entry = max(min(lv.price, entry_high), entry_low)
 
-    # Structural stop: the highest real level that still sits below entry.
+    # Structural stop
     candidates: list[tuple[float, str]] = []
     if st.retest_low:
-        candidates.append((st.retest_low, "below the retest low"))
+        candidates.append((st.retest_low, "beyond the retest extreme"))
     day_df = ind.session_of(df, day)
     post = ind.after_opening_range(day_df)
     if st.breakout_time is not None and not post.empty:
         bo = post[post.index >= pd.Timestamp(st.breakout_time)]
         if not bo.empty:
-            candidates.append((float(bo["Low"].iloc[0]), "below the breakout bar low"))
-    for p in ind.pivot_lows(day_df):
-        candidates.append((p, "below the last intraday swing low"))
-    candidates.append((lv.or_low, "below the opening-range low"))
+            candidates.append((float(bo["Low"].iloc[0] if is_long else bo["High"].iloc[0]), "beyond the breakout bar extreme"))
+    
+    if is_long:
+        for p in ind.pivot_lows(day_df):
+            candidates.append((p, "below the last intraday swing low"))
+        candidates.append((lv.or_low, "below the opening-range low"))
+        usable = [(lvl, why) for lvl, why in candidates if lvl < entry]
+        if not usable:
+            return None, [("risk", "no structural level below entry to place a stop against")]
+        base, basis = max(usable, key=lambda x: x[0])
+        stop = base - C.SL_BUFFER_ATR * atr_val
+        
+        entry_low = max(entry_low, stop + C.ENTRY_FLOOR_ATR * atr_val)
+        if entry_low > entry_high:
+            return None, [("risk", f"the structural stop ({stop:.2f}) sits inside the entry zone")]
+        entry = min(max(lv.price, entry_low), entry_high)
+        risk = entry - stop
+    else:
+        # short
+        for p in ind.pivot_highs(day_df):
+            candidates.append((p, "above the last intraday swing high"))
+        candidates.append((lv.or_high, "above the opening-range high"))
+        usable = [(lvl, why) for lvl, why in candidates if lvl > entry]
+        if not usable:
+            return None, [("risk", "no structural level above entry to place a stop against")]
+        base, basis = min(usable, key=lambda x: x[0])
+        stop = base + C.SL_BUFFER_ATR * atr_val
+        
+        entry_high = min(entry_high, stop - C.ENTRY_FLOOR_ATR * atr_val)
+        if entry_low > entry_high:
+            return None, [("risk", f"the structural stop ({stop:.2f}) sits inside the entry zone")]
+        entry = max(min(lv.price, entry_high), entry_low)
+        risk = stop - entry
 
-    usable = [(lvl, why) for lvl, why in candidates if lvl < entry]
-    if not usable:
-        return None, [("risk",
-                       "no structural level below entry to place a stop against")]
-    base, basis = max(usable, key=lambda x: x[0])
-    stop = base - C.SL_BUFFER_ATR * atr_val
-
-    # A shallow retest can leave the stop *above* the breakout level, and an
-    # entry zone that still started at the level would invite a fill below the
-    # stop — a plan that is under water the moment it fills. Lift the floor of
-    # the zone so every price inside it has real risk beneath it.
-    entry_low = max(entry_low, stop + C.ENTRY_FLOOR_ATR * atr_val)
-    if entry_low > entry_high:
-        return None, [("risk",
-                       f"the structural stop ({stop:.2f}) sits inside the entry "
-                       f"zone — there is no price here that is worth the risk")]
-    entry = min(max(lv.price, entry_low), entry_high)
-
-    risk = entry - stop
     if risk <= 0:
-        return None, [("risk", "stop-loss could not be placed below the entry")]
+        return None, [("risk", "stop-loss could not be placed properly")]
 
     risk_pct = risk / entry * 100
     if risk_pct > C.MAX_RISK_PCT:
@@ -237,25 +270,31 @@ def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
         problems.append(("risk", f"structural stop is only {risk_pct:.2f}% away — "
                                  "inside noise, it would be taken out at random"))
 
-    t1 = entry + C.TARGET_RR_1 * risk
-    t2 = entry + C.TARGET_RR_2 * risk
+    if is_long:
+        t1 = entry + C.TARGET_RR_1 * risk
+        t2 = entry + C.TARGET_RR_2 * risk
+    else:
+        t1 = entry - C.TARGET_RR_1 * risk
+        t2 = entry - C.TARGET_RR_2 * risk
 
     t1_hit = False
     t2_hit = False
 
-    # Check if current price is at or above target
-    if lv.price >= t1 - 1e-6:
-        t1_hit = True
-    if lv.price >= t2 - 1e-6:
-        t2_hit = True
+    if is_long:
+        if lv.price >= t1 - 1e-6: t1_hit = True
+        if lv.price >= t2 - 1e-6: t2_hit = True
+    else:
+        if lv.price <= t1 + 1e-6: t1_hit = True
+        if lv.price <= t2 + 1e-6: t2_hit = True
 
-    # Check if price action after the retest/breakout setup completed has reached target
     if st.breakout_time is not None and not post.empty:
-        # If retested, evaluate bars after the retest bar; otherwise bars after the breakout bar
         if st.retested:
             after_bo = post.iloc[1:]
-            band = R + C.RETEST_TOLERANCE_ATR * atr_val
-            touched_retest = after_bo[(after_bo["Low"] <= band) & (after_bo["Close"] > R)]
+            band = L + (1 if is_long else -1) * C.RETEST_TOLERANCE_ATR * atr_val
+            if is_long:
+                touched_retest = after_bo[(after_bo["Low"] <= band) & (after_bo["Close"] > L)]
+            else:
+                touched_retest = after_bo[(after_bo["High"] >= band) & (after_bo["Close"] < L)]
             if not touched_retest.empty:
                 after_setup = post[post.index > touched_retest.index[-1]]
             else:
@@ -264,12 +303,16 @@ def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
             after_setup = post[post.index > pd.Timestamp(st.breakout_time)]
 
         if not after_setup.empty:
-            max_close = float(after_setup["Close"].max())
-            max_high = float(after_setup["High"].max())
-            if max_close >= t1 - 1e-6:
-                t1_hit = True
-            if max_high >= t2 - 1e-6 or max_close >= t2 - 1e-6:
-                t2_hit = True
+            if is_long:
+                max_close = float(after_setup["Close"].max())
+                max_high = float(after_setup["High"].max())
+                if max_close >= t1 - 1e-6: t1_hit = True
+                if max_high >= t2 - 1e-6 or max_close >= t2 - 1e-6: t2_hit = True
+            else:
+                min_close = float(after_setup["Close"].min())
+                min_low = float(after_setup["Low"].min())
+                if min_close <= t1 + 1e-6: t1_hit = True
+                if min_low <= t2 + 1e-6 or min_close <= t2 + 1e-6: t2_hit = True
 
     if t1_hit:
         st.target1_hit = True
@@ -286,12 +329,19 @@ def build_trade(df: pd.DataFrame, day, lv: Levels, st: Structure
             "timing",
             f"Target 1 ({t1:.2f}) already achieved today — target move completed; do not enter now"
         ))
-    elif lv.overhead:
+    elif lv.overhead and is_long:
         room = (lv.overhead - entry) / risk
         if room < C.MIN_RR_TO_RESISTANCE:
             problems.append((
                 "risk",
                 f"resistance at {lv.overhead:.2f} is only {room:.1f}x risk above "
+                f"entry — cannot make the 1:{C.MIN_RR:g} target at {t1:.2f}"))
+    elif lv.support and not is_long:
+        room = (entry - lv.support) / risk
+        if room < C.MIN_RR_TO_RESISTANCE:
+            problems.append((
+                "risk",
+                f"support at {lv.support:.2f} is only {room:.1f}x risk below "
                 f"entry — cannot make the 1:{C.MIN_RR:g} target at {t1:.2f}"))
 
     trade = Trade(entry_low=entry_low, entry_high=entry_high, entry=entry,
