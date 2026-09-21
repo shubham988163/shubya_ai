@@ -159,8 +159,14 @@ def get_data(date: str | None) -> dict:
     if not date:
         date = today
 
-    trades = [dict(r) for r in conn.execute(
-        "SELECT * FROM trades WHERE date = ? ORDER BY ts", (date,)).fetchall()] if date else []
+    if date == "ALL":
+        trades = [dict(r) for r in conn.execute(
+            "SELECT * FROM trades ORDER BY ts DESC").fetchall()]
+    else:
+        trades = [dict(r) for r in conn.execute(
+            "SELECT * FROM trades WHERE date = ? ORDER BY ts", (date,)).fetchall()] if date else []
+
+    picker_dates = [today, "ALL"] + [d for d in dates if d != today and d != "ALL"]
 
     rejections = [dict(r) for r in conn.execute(
         "SELECT * FROM rejections ORDER BY ts DESC LIMIT 50").fetchall()]
@@ -234,7 +240,7 @@ def get_data(date: str | None) -> dict:
     except Exception:
         pass
 
-    return {"date": date, "dates": dates, "stats": stats, "trades": trades,
+    return {"date": date, "dates": picker_dates, "stats": stats, "trades": trades,
             "rejections": rejections, "agent_log": agent_log,
             "day_config": day_config, "report": report,
             "provider": prov, "model": model,
@@ -476,9 +482,12 @@ __TOPBAR__
   </div>
 
   <section class="panel" style="margin-top:14px">
-    <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line);background:var(--cell)">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line);background:var(--cell);flex-wrap:wrap;gap:8px">
       <h2 style="border-bottom:none;padding:0;background:none;margin:0">Trades <span class="sub">with the supervisor's verdict</span></h2>
-      <button class="btn go" id="btnNewTrade" style="font-size:11.5px;padding:4px 10px">+ Take Paper Trade</button>
+      <div style="display:flex;gap:8px;align-items:center">
+        <button class="btn" id="btnTriggerSupervisor" style="font-size:11.5px;padding:4px 10px">⚡ Review Pending Trades</button>
+        <button class="btn go" id="btnNewTrade" style="font-size:11.5px;padding:4px 10px">+ Take Paper Trade</button>
+      </div>
     </div>
     <div id="tradeForm" style="display:none;padding:12px;background:var(--card);border-bottom:1px solid var(--line);font-size:12px">
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
@@ -707,7 +716,8 @@ function render(){
   // date filter
   const sel=document.getElementById("dateSel"); sel.replaceChildren();
   (d.dates.length?d.dates:[d.date||"no data"]).forEach(dt=>{
-    const o=el("option",null,dt); o.value=dt; if(dt===d.date)o.selected=true; sel.append(o);
+    const label = dt === "ALL" ? "All Sessions (Full History)" : dt;
+    const o=el("option",null,label); o.value=dt; if(dt===d.date)o.selected=true; sel.append(o);
   });
   sel.onchange=()=>{selDate=sel.value; load();};
 
@@ -1218,6 +1228,23 @@ if (btnResetChallenge) {
   };
 }
 
+const btnTriggerSupervisor = document.getElementById("btnTriggerSupervisor");
+if (btnTriggerSupervisor) {
+  btnTriggerSupervisor.onclick = async () => {
+    btnTriggerSupervisor.disabled = true;
+    btnTriggerSupervisor.textContent = "Reviewing…";
+    try {
+      await fetch("/api/supervisor/review", {method: "POST"});
+      await load();
+    } catch(e) {
+      alert("Supervisor review error: " + e);
+    } finally {
+      btnTriggerSupervisor.disabled = false;
+      btnTriggerSupervisor.textContent = "⚡ Review Pending Trades";
+    }
+  };
+}
+
 load();
 loadFno();
 loadQuotes();
@@ -1288,6 +1315,13 @@ class Handler(BaseHTTPRequestHandler):
         elif url.path == "/api/telegram-alert":
             res = _handle_telegram_alert(body)
             self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res).encode())
+        elif url.path == "/api/supervisor/review":
+            try:
+                from trading.agents.supervisor import run as run_supervisor
+                run_supervisor(loop=False)
+                self._send(200, "application/json", json.dumps({"ok": True}).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"ok": False, "error": str(e)}).encode())
         elif url.path == "/api/challenge/reset":
             try:
                 from trading.challenge import reset_challenge

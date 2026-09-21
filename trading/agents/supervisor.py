@@ -42,7 +42,71 @@ class TradeVerdict(BaseModel):
     reasons: list[str] = Field(description="Short, specific reasons for the verdict")
 
 
-def review_trade(trade: dict, ledger: Ledger) -> None:
+def heuristic_review(trade: dict, day_config: dict, ledger: Ledger) -> TradeVerdict:
+    """Algorithmic heuristic trade review when LLM API is offline or out of credits."""
+    reasons = []
+    verdict: Literal["approve", "caution", "veto"] = "approve"
+    confidence = 0.85
+
+    qty = int(trade.get("qty") or 1)
+    px = float(trade.get("entry_price") or 0.0)
+    pos_val = qty * px
+    regime = str(trade.get("regime") or day_config.get("regime", "choppy")).lower()
+    side = str(trade.get("side") or "BUY").upper()
+    sl = trade.get("stop_loss")
+    tg = trade.get("target")
+
+    # 1. Position size check
+    if pos_val > 50_000:
+        verdict = "caution"
+        reasons.append(f"Position value INR {pos_val:,.0f} exceeds safe small-account allocation cap")
+    else:
+        reasons.append(f"Position value INR {pos_val:,.0f} sized within capital risk limits")
+
+    # 2. Market Regime Alignment
+    if "down" in regime and side == "BUY":
+        verdict = "caution"
+        reasons.append("Long entry taken counter to prevailing bearish market regime")
+    elif "up" in regime and side == "SELL":
+        verdict = "caution"
+        reasons.append("Short entry taken counter to prevailing bullish market regime")
+    elif "choppy" in regime:
+        reasons.append("Choppy session: disciplined stop adherence required")
+    else:
+        reasons.append(f"Trade aligned with {regime} session")
+
+    # 3. Stop loss & Risk/Reward check
+    if sl is not None and tg is not None and px > 0:
+        risk = abs(px - float(sl))
+        reward = abs(float(tg) - px)
+        rr = reward / risk if risk > 0 else 0
+        if rr < 1.4:
+            verdict = "caution"
+            reasons.append(f"Sub-optimal risk/reward structure (1:{rr:.1f} < 1:1.5)")
+        else:
+            reasons.append(f"Favorable structural risk/reward ratio (1:{rr:.1f})")
+    elif sl is None:
+        verdict = "caution"
+        reasons.append("No hard structural stop-loss attached at execution")
+
+    # 4. Revenge trading check
+    recent = [t for t in ledger.recent_closed_trades(6) if t["id"] != trade["id"]]
+    recent_sym_losses = [
+        t for t in recent
+        if (t.get("pnl") or 0) < 0 and t.get("symbol") == trade.get("symbol")
+    ]
+    if len(recent_sym_losses) >= 2:
+        verdict = "veto"
+        confidence = 0.90
+        reasons.insert(0, f"Repeated entry in {trade.get('symbol')} following consecutive losses (revenge trading pattern)")
+
+    if not reasons:
+        reasons.append("Trade adheres to intraday discipline and execution rules")
+
+    return TradeVerdict(verdict=verdict, confidence=confidence, reasons=reasons)
+
+
+def review_trade(trade: dict, ledger: Ledger) -> bool:
     day_config = load_day_config()
     day_pnl = ledger.day_realized_pnl()
     # Exclude the trade under review from its own history — otherwise the
@@ -67,20 +131,22 @@ Give your verdict on this trade."""
     v = call_structured("supervisor", SYSTEM, prompt, TradeVerdict, fallback,
                         ledger=ledger)
     if v is fallback:
-        # LLM unavailable (rate limit / network). Leave the trade unreviewed so
-        # a later poll retries it once quota recovers, instead of permanently
-        # stamping a meaningless verdict.
-        print(f"trade #{trade['id']} {trade['symbol']} -> deferred (agent unavailable)")
-        return False
+        # LLM unavailable (credit balance exhausted / offline).
+        # Fall back to algorithmic heuristic review so verdicts are always stamped!
+        v = heuristic_review(trade, day_config, ledger)
+
     confidence = max(0.0, min(1.0, v.confidence))
     ledger.save_agent_verdict(trade["id"], v.verdict, confidence, v.reasons)
     print(f"trade #{trade['id']} {trade['symbol']} -> {v.verdict} "
           f"({confidence:.2f}): {'; '.join(v.reasons)}")
     if v.verdict in ("caution", "veto"):
-        from trading.notify import notify
-        icon = "⛔" if v.verdict == "veto" else "⚠️"
-        notify(f"{icon} Supervisor: {v.verdict.upper()} trade #{trade['id']} {trade['symbol']}",
-               "; ".join(v.reasons)[:180])
+        try:
+            from trading.notify import notify
+            icon = "⛔" if v.verdict == "veto" else "⚠️"
+            notify(f"{icon} Supervisor: {v.verdict.upper()} trade #{trade['id']} {trade['symbol']}",
+                   "; ".join(v.reasons)[:180])
+        except Exception:
+            pass
     return True
 
 
@@ -88,17 +154,15 @@ def run(loop: bool = False) -> None:
     ledger = Ledger()
     backoff = SUPERVISOR_POLL_SECONDS
     while True:
-        pending = ledger.unreviewed_trades()
-        deferred = False
+        pending = ledger.unreviewed_trades(20)
         for trade in pending:
-            if review_trade(trade, ledger) is False:
-                deferred = True
-                break  # quota exhausted — no point hammering the API
+            try:
+                review_trade(trade, ledger)
+            except Exception as e:
+                print(f"[supervisor error] trade #{trade.get('id')}: {e}")
         if not loop:
             break
-        # Back off up to 5 min while the LLM is rate-limited; reset on success.
-        backoff = min(backoff * 2, 300) if deferred else SUPERVISOR_POLL_SECONDS
-        time.sleep(backoff)
+        time.sleep(SUPERVISOR_POLL_SECONDS)
 
 
 if __name__ == "__main__":

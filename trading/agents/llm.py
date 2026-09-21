@@ -27,6 +27,7 @@ T = TypeVar("T", bound=BaseModel)
 
 _anthropic_client = None
 _gemini_client = None
+_provider_cooldown: dict[str, float] = {}
 
 
 def provider() -> str:
@@ -76,6 +77,11 @@ def call_structured(agent_name: str, system: str, prompt: str,
     ledger = ledger or Ledger()
     which = provider()
     model = GEMINI_MODEL if which == "gemini" else ANTHROPIC_MODEL
+
+    # If provider is on cooldown (e.g. credit balance exhausted), immediately return fallback
+    if which in _provider_cooldown and time.time() < _provider_cooldown[which]:
+        return fallback
+
     try:
         if which == "gemini":
             result = _call_gemini_structured(system, prompt, output_model)
@@ -89,8 +95,11 @@ def call_structured(agent_name: str, system: str, prompt: str,
                               result.model_dump_json(), ok=True)
         return result
     except Exception as e:  # noqa: BLE001 — agents must never crash the pipeline
+        err_msg = repr(e)
+        if "credit balance is too low" in err_msg.lower() or "authentication" in err_msg.lower():
+            _provider_cooldown[which] = time.time() + 600
         ledger.log_agent_call(agent_name, model, prompt, None,
-                              ok=False, error=repr(e))
+                              ok=False, error=err_msg)
         return fallback
 
 
