@@ -58,23 +58,43 @@ def _breakdown(trades: list[dict], key: str) -> list[dict]:
 
 
 def _get_ltp(symbol: str) -> float:
+    # 1. Primary: Real-time Fyers quote
     try:
         from trading.fno.fyers import FyersClient
         client = FyersClient()
-        fyers_sym = f"NSE:{symbol}-EQ" if not symbol.startswith("NSE:") else symbol
+        fyers_sym = f"NSE:{symbol}-EQ" if not (symbol.startswith("NSE:") or symbol.startswith("BSE:") or symbol.startswith("MCX:")) else symbol
         q = client.quotes([fyers_sym])
         if q and len(q) > 0 and "v" in q[0] and "lp" in q[0]["v"]:
-            return float(q[0]["v"]["lp"])
+            lp = float(q[0]["v"]["lp"])
+            if lp > 0:
+                return lp
     except Exception:
         pass
+
+    # 2. Secondary: yfinance live tick
     try:
-        t = yf.Ticker(symbol + ".NS")
+        sym_clean = symbol.replace("NSE:", "").replace("-EQ", "").strip()
+        t = yf.Ticker(sym_clean + ".NS")
         hist = t.history(period="1d", interval="5m")
         if not hist.empty and "Close" in hist.columns:
-            return float(hist["Close"].iloc[-1])
+            lp = float(hist["Close"].iloc[-1])
+            if lp > 0:
+                return lp
     except Exception:
         pass
-    return 1000.0
+
+    # 3. Tertiary: check if ledger has an entry price for this symbol to avoid breaking UI
+    try:
+        conn = sqlite3.connect("data/ledger.db", timeout=5)
+        r = conn.execute("SELECT entry_price FROM trades WHERE symbol = ? AND entry_price > 0 ORDER BY id DESC LIMIT 1", (symbol,)).fetchone()
+        conn.close()
+        if r and r[0] and float(r[0]) > 0:
+            return float(r[0])
+    except Exception:
+        pass
+
+    return 0.0
+
 
 
 def _handle_trade(data: dict) -> dict:
@@ -183,6 +203,8 @@ def get_data(date: str | None) -> dict:
     for t in open_trades:
         try:
             ltp = _get_ltp(t["symbol"])
+            if ltp <= 0:
+                ltp = float(t["entry_price"])
             t["current_price"] = round(ltp, 2)
             side_mult = 1.0 if str(t["side"]).upper() == "BUY" else -1.0
             gross_pnl = (ltp - t["entry_price"]) * t["qty"] * side_mult
@@ -192,6 +214,7 @@ def get_data(date: str | None) -> dict:
             t["est_charges"] = round(est_chg, 2)
             total_unrealized += t["unrealized_pnl"]
             total_est_charges += est_chg
+
         except Exception:
             t["current_price"] = None
             t["unrealized_pnl"] = None

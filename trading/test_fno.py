@@ -13,7 +13,10 @@ Run with:
 from __future__ import annotations
 
 import sys
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8")
 import time
+
 from datetime import date, datetime, timedelta
 
 import pandas as pd
@@ -202,8 +205,9 @@ def test_structure():
           f"mult={st.breakout_vol_mult}")
     check("retest into 101.10 recognised and holding",
           st.retested and close_to(st.retest_low, 101.10) and st.holding)
-    check("status reads breakout → retest → hold",
+    check("status reads breakout -> retest -> hold",
           st.status == "BREAKOUT → RETEST → HOLD", st.status)
+
     check("clean setup is not flagged extended", not st.extended)
 
     _, _, wick = _levels(TODAY_WICK)

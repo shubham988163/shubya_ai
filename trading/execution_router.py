@@ -198,7 +198,32 @@ class ExecutionRouter:
             resp = fyers.place_order(data=order_data)
             if isinstance(resp, dict) and resp.get("s") == "ok":
                 order_id = resp.get("id")
-                ltp = self.get_ltp(signal["symbol"]) if self.get_ltp else signal["price"]
+                ltp = None
+                if signal.get("price"):
+                    try:
+                        p = float(signal["price"])
+                        if p > 0:
+                            ltp = p
+                    except Exception:
+                        pass
+                if (ltp is None or ltp <= 0) and self.get_ltp:
+                    try:
+                        val = self.get_ltp(signal["symbol"])
+                        if val and float(val) > 0 and float(val) != 1000.0:
+                            ltp = float(val)
+                    except Exception:
+                        pass
+                if ltp is None or ltp <= 0:
+                    try:
+                        from trading.dashboard import _get_ltp
+                        val = _get_ltp(signal["symbol"])
+                        if val and float(val) > 0 and float(val) != 1000.0:
+                            ltp = float(val)
+                    except Exception:
+                        pass
+                if ltp is None or ltp <= 0:
+                    ltp = 1.0
+
                 trade_id = self.ledger.record_entry(signal, fill_price=ltp, mode="live")
                 print(f"[LIVE FYERS SUCCESS] Real order placed: {fyers_sym} x{signal['qty']} (Fyers ID: {order_id}) -> Ledger #{trade_id}")
                 return trade_id
@@ -215,6 +240,38 @@ class ExecutionRouter:
             return None
 
     def simulate_fill(self, signal: dict) -> float:
-        ltp = self.get_ltp(signal["symbol"]) if self.get_ltp else signal["price"]
+        ltp = None
+        # 1. First priority: explicit price provided in the incoming signal
+        if signal.get("price"):
+            try:
+                p = float(signal["price"])
+                if p > 0:
+                    ltp = p
+            except Exception:
+                pass
+
+        # 2. Second priority: get_ltp callback if it returns a non-stub valid price
+        if (ltp is None or ltp <= 0) and self.get_ltp:
+            try:
+                val = self.get_ltp(signal["symbol"])
+                if val and float(val) > 0 and float(val) != 1000.0:
+                    ltp = float(val)
+            except Exception:
+                pass
+
+        # 3. Third priority: live tick from dashboard resolver
+        if ltp is None or ltp <= 0:
+            try:
+                from trading.dashboard import _get_ltp
+                val = _get_ltp(signal["symbol"])
+                if val and float(val) > 0 and float(val) != 1000.0:
+                    ltp = float(val)
+            except Exception:
+                pass
+
+        if ltp is None or ltp <= 0:
+            ltp = 1.0
+
         slip = SLIPPAGE_PCT * ltp
         return ltp + slip if signal["side"] == "BUY" else ltp - slip
+
