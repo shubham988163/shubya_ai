@@ -62,7 +62,25 @@ FYERS_APP_ID = "J8ZMHWBTBW-100"
 FYERS_SECRET_ID = "KLFH4NCSIV"
 FYERS_REDIRECT_URI = "http://localhost:3001/api/fyers/callback"
 
-# --- Strategy: EMA crossover ---
+# --- Strategy Engine Selection ---
+ACTIVE_STRATEGY = os.environ.get("ACTIVE_STRATEGY", "orb_200ma")
+ENABLE_FNO_AUTO_TRADER = os.environ.get("ENABLE_FNO_AUTO_TRADER", "0") in ("1", "true", "True")
+
+# --- Strategy: ORB + Multi-TF 200MA Trend Filter ---
+ORB_MINUTES = 15
+ORB_MIN_RANGE_PCT = 0.3
+ORB_MAX_RANGE_PCT = 1.5
+ORB_USE_1H_FILTER = True
+ORB_USE_30M_FILTER = True
+ORB_MA_LEN = 200
+ORB_ATR_LEN = 14
+ORB_SL_ATR_MULT = 1.0
+ORB_TP_R_MULT = 1.8
+ORB_USE_VOL_FILTER = True
+ORB_ONE_TRADE_PER_SIDE = True
+ORB_NO_NEW_ENTRIES_AFTER = "14:30"
+
+# --- Strategy: EMA crossover (legacy / secondary) ---
 FAST_EMA = 9
 SLOW_EMA = 21
 # 15m: the only net-positive config in the Jun-30→Jul-13 backtest
@@ -73,6 +91,7 @@ SWING_LOOKBACK = 10             # bars used to find the swing low/high for the s
 RR_TARGET = 2.0                 # target = entry +/- 2x risk (1:2)
 # Account sizing calibrated specifically for 15k to 1 Lakh Survival & Compounding Challenge:
 ACCOUNT_CAPITAL = 15_000.0
+
 CHALLENGE_TARGET = 100_000.0
 RISK_PER_TRADE = 225.0          # INR risked per trade base (1.5% of 15k) -> safe, realistic position sizing
 

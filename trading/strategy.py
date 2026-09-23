@@ -32,15 +32,24 @@ import yfinance as yf
 from trading.config import (
     SCAN_UNIVERSE, YF_SUFFIX, FAST_EMA, SLOW_EMA, CANDLE_INTERVAL, SWING_LOOKBACK,
     RR_TARGET, RISK_PER_TRADE, POLL_SECONDS, SQUAREOFF_TIME, MARKET_OPEN,
-    MARKET_CLOSE, MAX_POSITION_VALUE,
+    MARKET_CLOSE, MAX_POSITION_VALUE, ACTIVE_STRATEGY,
     AVWAP_RR, AVWAP_ATR_MULT, AVWAP_RSI_LEN, AVWAP_EMA_LEN, AVWAP_VOL_MULT,
 )
 from trading.costs import round_trip as round_trip_charges
 from trading.execution_router import ExecutionRouter
 from trading.ledger import Ledger
 from trading.notify import notify
+from trading.strategies.orb_200ma import (
+    add_orb_indicators,
+    detect_orb_signal,
+    orb_stop,
+    orb_target,
+    fetch_mtf_200ma,
+    get_opening_range,
+)
 
 IST = ZoneInfo("Asia/Kolkata")
+
 
 # Consecutive no-data scans before the engine gives up and asks to be restarted.
 # At POLL_SECONDS=60 that is five minutes of blindness.
@@ -384,7 +393,17 @@ STRATEGIES = {
         "stop": swing_stop, "rr": RR_TARGET,
         "bias": lambda bar: bar["ema_fast"] > bar["ema_slow"],
     },
+    # PineScript Port: ORB + Multi-TF 200MA Trend Filter Strategy
+    "orb_200ma": {
+        "id": "orb_200ma",
+        "prepare": add_orb_indicators,
+        "detect": lambda df, sym="": detect_orb_signal(df, sym),
+        "stop": orb_stop,
+        "target": orb_target,
+        "bias": lambda bar: True,
+    },
 }
+
 
 
 # --- engine ---
@@ -430,7 +449,19 @@ class Engine:
     def try_enter(self, symbol: str, df: pd.DataFrame, ts: float):
         if symbol in self.open:
             return
-        side = self.strat["detect"](df)
+        today_str = datetime.now(IST).strftime("%Y-%m-%d")
+        trades_today = self.ledger.trades_for_date(today_str)
+        try:
+            side = self.strat["detect"](df, sym=symbol, trades_today=trades_today)
+        except TypeError:
+            try:
+                side = self.strat["detect"](df, sym=symbol)
+            except TypeError:
+                try:
+                    side = self.strat["detect"](df, symbol)
+                except TypeError:
+                    side = self.strat["detect"](df)
+
         if side is None:
             return
         price = float(df.iloc[-1]["Close"])
@@ -438,6 +469,7 @@ class Engine:
         risk = (price - sl) if side == "BUY" else (sl - price)
         if risk <= 0:
             return
+
         if "target" in self.strat:
             target = self.strat["target"](df, side, price, sl)
             if target is None:
@@ -646,10 +678,11 @@ def main():
     # configuration that has been net-profitable. AVWAP looked good in the
     # ledger (+222 over 6 TV trades) but systematic replays lose every day —
     # run it with `--strategy avwap` if you want to keep testing it.
-    strategy = args[args.index("--strategy") + 1] if "--strategy" in args else "ema"
+    strategy = args[args.index("--strategy") + 1] if "--strategy" in args else ACTIVE_STRATEGY
     if strategy not in STRATEGIES:
         print(f"unknown strategy {strategy!r} — choose from {list(STRATEGIES)}")
         return
+
     engine = Engine(router, ledger, strategy=strategy)
     print(f"strategy: {engine.strat['id']}")
     print(f"day config: {router.day_config}")

@@ -216,22 +216,33 @@ class ServiceManager:
             )
 
     def ensure_strategy(self) -> None:
+        from trading.config import ACTIVE_STRATEGY
         strat_pid = self.pids.get("strategy")
         if not strat_pid or not is_pid_alive(strat_pid):
             self.start_process(
                 "strategy",
-                [PYTHON, "-u", "-m", "trading.strategy"],
+                [PYTHON, "-u", "-m", "trading.strategy", "--strategy", ACTIVE_STRATEGY],
                 LOGS_DIR / "strategy.log"
             )
 
     def ensure_fno_auto_trader(self) -> None:
+        from trading.config import ENABLE_FNO_AUTO_TRADER, ACTIVE_STRATEGY
         trader_pid = self.pids.get("fno_auto_trader")
+        if not ENABLE_FNO_AUTO_TRADER:
+            if trader_pid and is_pid_alive(trader_pid):
+                kill_proc(trader_pid)
+                self.pids.pop("fno_auto_trader", None)
+                save_pids(self.pids)
+                print(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Stopped fno_auto_trader (paused in favor of {ACTIVE_STRATEGY})", flush=True)
+            return
+
         if not trader_pid or not is_pid_alive(trader_pid):
             self.start_process(
                 "fno_auto_trader",
                 [PYTHON, "-u", "-m", "trading.fno.auto_trader"],
                 LOGS_DIR / "fno_auto_trader.log"
             )
+
 
     def ensure_survival_agent(self) -> None:
         surv_pid = self.pids.get("survival_agent")
