@@ -235,9 +235,9 @@ def recalculate_state() -> dict:
     risk_per_trade = round(current_equity * (active_risk_pct / 100.0), 2)
     risk_per_trade = max(100.0, risk_per_trade)
 
-    # Circuit Breakers
-    circuit_breaker_active = bool(state.get("circuit_breaker_active", False))
-    circuit_breaker_reason = state.get("circuit_breaker_reason")
+    # Circuit Breakers (evaluated fresh for today's session)
+    circuit_breaker_active = False
+    circuit_breaker_reason = None
 
     # Circuit breaker 1: 2 consecutive losses in one session
     if today_loss_streak >= 2:
@@ -248,6 +248,7 @@ def recalculate_state() -> dict:
     if today_pnl <= daily_loss_limit:
         circuit_breaker_active = True
         circuit_breaker_reason = f"Daily loss limit reached (P&L INR {today_pnl:.2f} <= INR {daily_loss_limit:.2f}) - Trading paused for today."
+
 
     # Survival Health Score (0 - 100)
     # Starts at 100. Penalized by drawdown, loss streaks; rewarded by gain multiple & win rate

@@ -37,11 +37,11 @@ NIFTY50 = [
     "TECHM", "TITAN", "TRENT", "ULTRACEMCO", "WIPRO",
 ]
 
-# What the strategy engine scans. The full-Nifty-50 sweep (Jul 9–10) lost
-# money in choppy conditions; the 6-stock core watchlist (Jul 7 setup) is the
-# only configuration that has been net-profitable so far.
-SCAN_UNIVERSE = WATCHLIST
+# What the strategy engine scans — expanded to Nifty 50 so it actively
+# monitors all leading liquid Indian stocks for ORB breakout opportunities.
+SCAN_UNIVERSE = NIFTY50
 YF_SUFFIX = ".NS"
+
 
 # --- data retention ---
 # The dashboard is a working screen, not an archive. Keep the last N *sessions*
