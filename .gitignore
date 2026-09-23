@@ -17,6 +17,7 @@ logs/
 data/fno/*
 !data/fno/*.json
 
-# macOS
-.DS_Store
+# Binaries
+tools/
+*.exe
 

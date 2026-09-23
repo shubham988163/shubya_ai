@@ -151,6 +151,12 @@ def stop_all() -> None:
     if PID_FILE.exists():
         PID_FILE.unlink(missing_ok=True)
 
+    try:
+        from trading.tunnel import stop_tunnel
+        stop_tunnel()
+    except Exception:
+        pass
+
     send_telegram("🛑 RanchoTrade Stopped", "All automated trading services were stopped.")
     print("All services stopped.")
 
@@ -160,6 +166,16 @@ def status() -> None:
     dash_port = is_port_in_use(8787)
     print("=== RanchoTrade Status ===")
     print(f"Web Dashboard Port (8787): {'LISTENING' if dash_port else 'STOPPED'}")
+
+    try:
+        from trading.tunnel import get_tunnel_info
+        t_info = get_tunnel_info()
+        if t_info.get("active") and t_info.get("url"):
+            print(f"Cloudflare Tunnel: ACTIVE -> {t_info['url']}")
+        else:
+            print("Cloudflare Tunnel: STOPPED")
+    except Exception:
+        pass
 
     if not pids:
         print("No services recorded in PID file.")
@@ -253,6 +269,28 @@ class ServiceManager:
                 LOGS_DIR / "survival_agent.log"
             )
 
+    def ensure_tunnel(self) -> None:
+        from trading.config import ENABLE_CLOUDFLARE_TUNNEL, CLOUDFLARE_TUNNEL_PORT
+        if not ENABLE_CLOUDFLARE_TUNNEL:
+            return
+        tun_pid = self.pids.get("tunnel")
+        if not tun_pid or not is_pid_alive(tun_pid):
+            from trading.tunnel import get_tunnel_info, start_tunnel
+            info = get_tunnel_info()
+            if info.get("active") and info.get("pid") and is_pid_alive(info["pid"]):
+                self.pids["tunnel"] = info["pid"]
+                save_pids(self.pids)
+                return
+
+            print(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Launching Cloudflare Tunnel for remote/mobile access...", flush=True)
+            try:
+                t_info = start_tunnel(port=CLOUDFLARE_TUNNEL_PORT)
+                self.pids["tunnel"] = t_info["pid"]
+                save_pids(self.pids)
+                print(f"[{datetime.now(IST).strftime('%H:%M:%S')}] Cloudflare Tunnel active: {t_info.get('url')}", flush=True)
+            except Exception as e:
+                print(f"[tunnel launch error] {e}", flush=True)
+
     def run_premarket(self) -> None:
         today_str = datetime.now(IST).strftime("%Y-%m-%d")
         if self.premarket_done_today == today_str:
@@ -289,6 +327,7 @@ class ServiceManager:
 
         # Initial launch
         self.ensure_dashboard()
+        self.ensure_tunnel()
         self.ensure_survival_agent()
         if market_open_now:
             self.ensure_supervisor()
@@ -316,8 +355,9 @@ class ServiceManager:
                 hhmm = now.strftime("%H:%M")
                 is_weekday = now.weekday() < 5
 
-                # 1. Always keep dashboard & survival agent alive
+                # 1. Always keep dashboard, tunnel & survival agent alive
                 self.ensure_dashboard()
+                self.ensure_tunnel()
                 self.ensure_survival_agent()
 
                 # 2. Weekday trading schedule

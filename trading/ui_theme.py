@@ -234,9 +234,26 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
       <span id="alertIcon">🔔</span> <span id="alertLabel">Alerts ON</span>
     </button>
     <a id="fyersPill" class="btn" style="font-size:11px;padding:3px 9px;text-decoration:none;display:inline-flex;align-items:center;gap:4px" target="_blank" href="/api/fyers/login">Fyers…</a>
+    <a id="tunnelPill" class="btn" style="font-size:11px;padding:3px 9px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;cursor:pointer" onclick="window.showTunnelModal &amp;&amp; window.showTunnelModal()">🌐 Remote Access…</a>
 {right}
     <button class="btn" id="theme" title="Switch dark / light / system">Dark</button>
-  </header>"""
+  </header>
+  <div id="tunnelModal" style="display:none;position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,0.65);backdrop-filter:blur(4px);align-items:center;justify-content:center;padding:16px" onclick="if(event.target===this)this.style.display='none'">
+    <div style="background:var(--card);border:1px solid var(--line-2);border-radius:14px;box-shadow:var(--shadow);max-width:440px;width:100%;padding:22px;position:relative">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+        <div style="font-weight:700;font-size:14px;display:flex;align-items:center;gap:7px">
+          <span>🌐</span> <span>Cloudflare Remote &amp; Mobile Access</span>
+        </div>
+        <button class="btn sm" onclick="document.getElementById('tunnelModal').style.display='none'" style="padding:2px 8px;font-size:13px">&times;</button>
+      </div>
+      <p style="font-size:12px;color:var(--ink-2);margin:0 0 14px;line-height:1.4">
+        Access this trading dashboard &amp; scanner live from your smartphone, tablet, or another PC without any router setup.
+      </p>
+      <div id="tunnelModalContent" style="text-align:center">
+        <div class="muted">Loading tunnel status…</div>
+      </div>
+    </div>
+  </div>"""
 
 
 # One implementation of the NIFTY panel, injected into both pages, so the
@@ -699,5 +716,62 @@ window.ScannerAlerts = (function(){
   }
   checkFyers();
   setInterval(checkFyers, 10000);
+
+  let TUNNEL_STATE = null;
+  window.showTunnelModal = function(){
+    const m = document.getElementById("tunnelModal");
+    if(!m) return;
+    m.style.display = "flex";
+    const box = document.getElementById("tunnelModalContent");
+    if(!box) return;
+    if(TUNNEL_STATE && TUNNEL_STATE.active && TUNNEL_STATE.url){
+      box.innerHTML = `
+        <div style="background:var(--cell);border:1px solid var(--line);border-radius:10px;padding:12px;display:inline-block;margin-bottom:12px">
+          <img src="/api/tunnel/qr.svg?t=${Date.now()}" alt="Mobile QR Code" style="width:190px;height:190px;display:block;border-radius:6px;background:white;padding:6px" />
+        </div>
+        <div style="font-size:11.5px;color:var(--ink-2);margin-bottom:10px">
+          📱 <b>Scan with your mobile camera</b> to open instantly.
+        </div>
+        <div style="display:flex;gap:6px;align-items:center;justify-content:center;background:var(--cell-2);border:1px solid var(--line);border-radius:8px;padding:7px 10px;font-size:12px;word-break:break-all">
+          <a href="${TUNNEL_STATE.url}" target="_blank" style="color:var(--accent);font-weight:600;text-decoration:none">${TUNNEL_STATE.url}</a>
+          <button class="btn sm" onclick="navigator.clipboard.writeText('${TUNNEL_STATE.url}');alert('Copied remote URL to clipboard!');" style="padding:2px 7px;font-size:10px">Copy</button>
+        </div>
+      `;
+    } else {
+      box.innerHTML = `
+        <div style="padding:16px;color:var(--ink-2);font-size:12.5px">
+          <p>Cloudflare tunnel is not currently connected.</p>
+          <p style="font-size:11.5px;color:var(--ink-3)">Start it with <code>python scripts/tunnel.py</code> or launch the master runner <code>python scripts/run_all.py</code>.</p>
+        </div>
+      `;
+    }
+  };
+
+  async function checkTunnel(){
+    try{
+      const r = await fetch("/api/tunnel/status");
+      const st = await r.json();
+      TUNNEL_STATE = st;
+      const p = document.getElementById("tunnelPill");
+      if(p){
+        if(st.active && st.url){
+          p.style.borderColor = "var(--good)";
+          p.style.background = "var(--good-soft)";
+          p.style.color = "var(--good)";
+          p.textContent = "🌐 Mobile Live";
+          p.title = "Cloudflare Tunnel Active: " + st.url + " (Click to view QR code / copy link)";
+        } else {
+          p.style.borderColor = "var(--line)";
+          p.style.background = "var(--cell)";
+          p.style.color = "var(--ink-3)";
+          p.textContent = "🌐 Mobile Link";
+          p.title = "Cloudflare tunnel is offline (Click to view status)";
+        }
+      }
+    }catch(e){}
+  }
+  checkTunnel();
+  setInterval(checkTunnel, 15000);
 })();
 """
+

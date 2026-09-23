@@ -263,6 +263,13 @@ def get_data(date: str | None) -> dict:
     except Exception:
         pass
 
+    tunnel_data = None
+    try:
+        from trading.tunnel import get_tunnel_info
+        tunnel_data = get_tunnel_info()
+    except Exception:
+        pass
+
     return {"date": date, "dates": picker_dates, "stats": stats, "trades": trades,
             "rejections": rejections, "agent_log": agent_log,
             "day_config": day_config, "report": report,
@@ -271,7 +278,8 @@ def get_data(date: str | None) -> dict:
             "side_report": _breakdown(trades, "side"),
             "strategy_report": _breakdown(trades, "strategy_id"),
             "day_pnl_all_time": ledger.day_realized_pnl(date) if date else 0,
-            "challenge": challenge_data}
+            "challenge": challenge_data,
+            "tunnel": tunnel_data}
 
 
 _PAGE_TEMPLATE = r"""<!doctype html>
@@ -1294,6 +1302,9 @@ PAGE = (_PAGE_TEMPLATE
 
 
 class Handler(BaseHTTPRequestHandler):
+    def do_HEAD(self):  # noqa: N802
+        self.do_GET()
+
     def do_GET(self):  # noqa: N802
         url = urlparse(self.path)
         # The F&O scanner page and its API live in trading.fno.web; they are
@@ -1314,6 +1325,23 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(200, "application/json", json.dumps(st, default=str).encode())
             except Exception as e:
                 self._send(500, "application/json", json.dumps({"error": str(e)}).encode())
+        elif url.path == "/api/tunnel/status":
+            try:
+                from trading.tunnel import get_tunnel_info, get_qr_svg_content
+                info = get_tunnel_info()
+                info["qr_svg"] = get_qr_svg_content() if info.get("active") else None
+                self._send(200, "application/json", json.dumps(info, default=str).encode())
+            except Exception as e:
+                self._send(500, "application/json", json.dumps({"active": False, "error": str(e)}).encode())
+        elif url.path == "/api/tunnel/qr.svg":
+            try:
+                from trading.tunnel import QR_SVG_FILE
+                if QR_SVG_FILE.exists():
+                    self._send(200, "image/svg+xml", QR_SVG_FILE.read_bytes())
+                else:
+                    self._send(404, "text/plain", b"qr not found")
+            except Exception:
+                self._send(500, "text/plain", b"error reading qr")
         elif url.path == "/":
             self._send(200, "text/html; charset=utf-8", PAGE.encode())
         elif url.path == "/favicon.ico":
@@ -1362,7 +1390,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
             self.end_headers()
-            self.wfile.write(body)
+            if getattr(self, "command", "") != "HEAD":
+                self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 

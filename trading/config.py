@@ -145,3 +145,8 @@ FALLBACK_DAY_CONFIG = {
     "blocked_symbols": [],
     "rationale": "fallback: pre-market agent unavailable — trading at half size",
 }
+
+# --- Cloudflare Tunnel (Remote Mobile/Desktop Access) ---
+ENABLE_CLOUDFLARE_TUNNEL = True
+CLOUDFLARE_TUNNEL_PORT = 8787
+
