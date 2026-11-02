@@ -557,7 +557,7 @@ __TOPBAR__
           <span class="agent-badge" style="background:var(--accent-soft);color:var(--accent);border:1px solid rgba(47,159,219,.3)">Live Consensus Engine</span>
         </div>
         <div style="font-size:11px;color:var(--ink-3);margin-top:3px">
-          Autonomous 4-Agent Debate Council powered by <strong>Google Gemini 3.5 Flash Lite</strong> + <strong>Fyers API v3 Tick Stream</strong>
+          Autonomous 4-Agent Debate Council powered by <strong>Google Gemini 3.8 Flash</strong> + <strong>Fyers API v3 Tick Stream</strong>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
@@ -2563,7 +2563,7 @@ async function executeAiTradeDirect(sym, side, px, sl, tg){
 }
 
 loadQuotes();
-setInterval(loadQuotes, 2000);
+setInterval(loadQuotes, 5000);
 __THEMEJS__
 </script>
 </body></html>

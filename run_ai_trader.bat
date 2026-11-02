@@ -19,9 +19,15 @@ cd /d "%~dp0"
 
 if "%TRADER_TIMEOUT_SECONDS%"=="" set TRADER_TIMEOUT_SECONDS=600
 
-REM Prefer the project virtualenv; fall back to whatever python is on PATH.
-set PY=python
-if exist ".venv\Scripts\python.exe" set PY=.venv\Scripts\python.exe
+REM Prefer Python 3.12 with installed dependencies; fall back to virtualenv or system python.
+set PY=C:\Users\shubham.panchal\AppData\Local\Programs\Python\Python312\python.exe
+if not exist "%PY%" (
+    if exist ".venv\Scripts\python.exe" (
+        set PY=.venv\Scripts\python.exe
+    ) else (
+        set PY=python
+    )
+)
 
 echo [%date% %time%] agent pass start >> logs\trader_schedule.log
 "%PY%" -m trading.agents.agent_trader --with-scanner --max-trades 3 >> logs\trader_schedule.log 2>&1

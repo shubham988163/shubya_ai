@@ -280,6 +280,15 @@ class Ledger:
                 "SELECT * FROM trades WHERE status = 'open' ORDER BY ts").fetchall()
             return [dict(r) for r in rows]
 
+    def closed_trades_today(self, date: str | None = None) -> list[dict]:
+        """Fetch all trades closed today, ordered by exit timestamp descending."""
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT * FROM trades WHERE status = 'closed' AND date = ? ORDER BY exit_ts DESC",
+                (date or _today(),),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def recent_closed_trades(self, n: int = 5) -> list[dict]:
         with self._conn() as conn:
             rows = conn.execute(

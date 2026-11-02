@@ -40,16 +40,17 @@ IST = ZoneInfo("Asia/Kolkata")
 
 def get_lot_size(symbol: str) -> int:
     """Return standard contract lot size for an index or stock."""
-    clean = symbol.upper().replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
-    if clean in INDEX_LOT_SIZES:
-        return INDEX_LOT_SIZES[clean]
-    if clean in STOCK_LOT_SIZES:
-        return STOCK_LOT_SIZES[clean]
+    from trading.execution_router import extract_underlying
+    und = extract_underlying(symbol).upper()
+    if und in INDEX_LOT_SIZES:
+        return INDEX_LOT_SIZES[und]
+    if und in STOCK_LOT_SIZES:
+        return STOCK_LOT_SIZES[und]
     for k, v in INDEX_LOT_SIZES.items():
-        if k in clean:
+        if k == und or k.replace(" ", "") == und:
             return v
     for k, v in STOCK_LOT_SIZES.items():
-        if k in clean:
+        if k == und:
             return v
     return DEFAULT_STOCK_OPTION_LOT
 
@@ -85,13 +86,39 @@ def build_option_order_from_plan(
     if premium <= 0:
         return None
 
+    from trading.config import (
+        OPTION_STOP_LOSS_PCT,
+        MIN_OPTION_STOP_LOSS_PCT,
+        MAX_OPTION_RISK_PER_TRADE,
+        MAX_OPTION_POSITION_VALUE,
+    )
+
+    # 1. Position value cap check
+    if MAX_OPTION_POSITION_VALUE is not None and (lot_size * premium) > MAX_OPTION_POSITION_VALUE:
+        return None
+
     # Calculate option stop-loss:
-    # 1. Modelled stop if available
-    # 2. Else 30% of premium
-    stop_premium = plan.premium_at_stop if plan.premium_at_stop is not None else round(premium * 0.70, 2)
-    # Ensure stop loss is below premium and > 0
+    # 1. Modelled stop if available (tight)
+    # 2. Strict percentage cap: maximum OPTION_STOP_LOSS_PCT (10% default)
+    # 3. Strict rupee cap: total loss cannot exceed MAX_OPTION_RISK_PER_TRADE (₹500 default)
+    stop_pct = OPTION_STOP_LOSS_PCT if OPTION_STOP_LOSS_PCT is not None else 0.10
+    default_stop = round(premium * (1 - stop_pct), 2)
+    stop_premium = plan.premium_at_stop if plan.premium_at_stop is not None else default_stop
+    if (premium - stop_premium) > premium * stop_pct:
+        stop_premium = round(premium * (1 - stop_pct), 2)
+    if MAX_OPTION_RISK_PER_TRADE is not None and MAX_OPTION_RISK_PER_TRADE > 0:
+        max_pts = MAX_OPTION_RISK_PER_TRADE / lot_size
+        if (premium - stop_premium) > max_pts:
+            stop_premium = round(premium - max_pts, 2)
+
+    # Ensure stop loss maintains at least minimum distance (spread noise filter)
+    min_dist_pct = MIN_OPTION_STOP_LOSS_PCT if MIN_OPTION_STOP_LOSS_PCT is not None else 0.03
+    if (premium - stop_premium) / premium < min_dist_pct:
+        # Stop loss too tight for market spread noise -> reject trade
+        return None
+
     if stop_premium >= premium or stop_premium <= 0:
-        stop_premium = max(0.05, round(premium * 0.70, 2))
+        stop_premium = max(0.05, round(premium * (1 - stop_pct), 2))
 
     # Calculate option target:
     # 1. Modelled target1 if available
@@ -266,19 +293,38 @@ def select_option_for_underlying(
     effective_strike_type = (strike_type or OPTION_STRIKE_TYPE).upper()
     effective_depth = max(1, itm_depth or OPTION_ITM_DEPTH)
 
-    # Filter quotes by strike_type (e.g. ITM)
-    candidate_quotes = quotes
+    # Stock lot-wise risk and capital gating:
+    from trading.config import (
+        get_max_viable_option_premium,
+        MAX_OPTION_RISK_PER_TRADE,
+        MAX_OPTION_POSITION_VALUE,
+    )
+    lot_size = get_lot_size(symbol)
+    max_viable_premium = get_max_viable_option_premium(symbol)
+
+    matching_kind = [q for q in quotes if q.option_type == target_kind and q.last_price > 0]
+    # Filter quotes that are financially viable for this stock's lot size (0.50 <= price <= max_viable_premium)
+    affordable_quotes = [q for q in matching_kind if 0.50 <= q.last_price <= max_viable_premium]
+
+    if not affordable_quotes:
+        min_seen = min((q.last_price for q in matching_kind), default=0.0)
+        print(f"[-] {symbol} 1-lot risk exceeds budget: lot_size={lot_size}, cheapest option premium=₹{min_seen:.2f} > max_viable=₹{max_viable_premium:.2f} (budget: ₹{MAX_OPTION_RISK_PER_TRADE} risk, ₹{MAX_OPTION_POSITION_VALUE} cap). Refusing oversized contract.")
+        return None
+
+    # Filter quotes by strike_type among affordable quotes
+    candidate_quotes = affordable_quotes
     if effective_strike_type == "ITM":
-        # Call ITM: strike < spot; Put ITM: strike > spot
         itm_quotes = [
-            q for q in quotes
-            if q.option_type == target_kind and q.last_price > 0 and (q.strike < spot if is_buy else q.strike > spot)
+            q for q in affordable_quotes
+            if (q.strike < spot if is_buy else q.strike > spot)
         ]
         if itm_quotes:
-            # Sort nearest to spot (least distance to spot among ITM)
             itm_quotes.sort(key=lambda q: abs(q.strike - spot))
             chosen_depth = min(effective_depth - 1, len(itm_quotes) - 1)
             candidate_quotes = itm_quotes[chosen_depth:chosen_depth + 3]
+        else:
+            affordable_quotes.sort(key=lambda q: abs(q.strike - spot))
+            candidate_quotes = affordable_quotes[:3]
 
     if is_buy:
         sl = stop_loss if stop_loss is not None else round(spot * 0.99, 2)
@@ -294,19 +340,10 @@ def select_option_for_underlying(
         plan = opt_mod.plan_put(symbol, candidate_quotes, spot=spot, target1=tg1, target2=tg2, stop=sl, now=now, today=now.date())
 
     # Fallback to chosen strike if strict plan checks filtered everything
-    if not plan.quote:
-        matching = [q for q in quotes if q.option_type == target_kind and q.last_price > 0]
-        if effective_strike_type == "ITM":
-            itm_matching = [q for q in matching if (q.strike < spot if is_buy else q.strike > spot)]
-            if itm_matching:
-                itm_matching.sort(key=lambda q: abs(q.strike - spot))
-                chosen = itm_matching[min(effective_depth - 1, len(itm_matching) - 1)]
-                plan.quote = chosen
-                plan.breakeven = chosen.strike + chosen.last_price if is_buy else chosen.strike - chosen.last_price
-        elif matching:
-            matching.sort(key=lambda q: abs(q.strike - spot))
-            best = matching[0]
-            plan.quote = best
-            plan.breakeven = best.strike + best.last_price if is_buy else best.strike - best.last_price
+    if not plan.quote and candidate_quotes:
+        candidate_quotes.sort(key=lambda q: abs(q.strike - spot))
+        best = candidate_quotes[0]
+        plan.quote = best
+        plan.breakeven = best.strike + best.last_price if is_buy else best.strike - best.last_price
 
     return build_option_order_from_plan(symbol, plan, side=side)

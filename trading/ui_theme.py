@@ -243,6 +243,7 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
     </div>
     <nav class="nav">
       <a href="/"{cur("dashboard")}>Dashboard</a>
+      <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700">🌐 Forex & Crypto (Delta)</a>
       <a href="/target"{cur("target")} style="color:#10b981;font-weight:700">🎯 15K → 1L Target</a>
       <a href="/#agents-desk" style="border-left:1px solid var(--line);color:var(--accent);font-weight:700">🤖 4 Agents Desk</a>
       <a href="/fno"{cur("scanner")}>Scanner</a>
@@ -251,6 +252,7 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
     <button class="btn" id="btnAlertToggle" title="Toggle Audio Chimes &amp; Desktop Alerts" onclick="window.ScannerAlerts &amp;&amp; window.ScannerAlerts.toggle()" style="font-size:11px;padding:4px 10px;display:inline-flex;align-items:center;gap:5px">
       <span id="alertIcon">🔔</span> <span id="alertLabel">Alerts ON</span>
     </button>
+    <a id="deltaPill" class="btn" style="font-size:11px;padding:3px 9px;text-decoration:none;display:inline-flex;align-items:center;gap:4px;border-color:var(--warn);background:var(--warn-soft);color:var(--warn)" href="/forex">🌐 Delta…</a>
     <a id="fyersPill" class="btn" style="font-size:11px;padding:3px 9px;text-decoration:none;display:inline-flex;align-items:center;gap:4px" target="_blank" href="/api/fyers/login">Fyers…</a>
 {right}
     <button class="btn" id="theme" title="Switch dark / light / system">Dark</button>
@@ -297,7 +299,8 @@ function niftyPanel(ix, nf){
     call.append(mk("span","chip", q.moneyness));
     call.append(mk("span","st", "OI " + (q.open_interest||0).toLocaleString("en-IN")));
 
-    const buyBtn = mk("button", "btn sm go", "Paper Buy " + kind);
+    const lotSize = q.lot_size || (titleName.includes("BANK") ? 30 : 75);
+    const buyBtn = mk("button", "btn sm go", "Paper Buy " + kind + " (Lot: " + lotSize + ")");
     buyBtn.style.marginLeft = "auto";
     buyBtn.onclick = async () => {
       buyBtn.disabled = true;
@@ -307,9 +310,10 @@ function niftyPanel(ix, nf){
           method: "POST",
           headers: {"Content-Type": "application/json"},
           body: JSON.stringify({
-            symbol: q.identifier || (titleName.replace(/\s+/g, "")) + q.strike + kind,
+            symbol: q.identifier || q.symbol || (titleName.replace(/\s+/g, "")) + q.strike + kind,
             underlying: titleName,
             side: "BUY",
+            qty: lotSize,
             is_option: true,
             option_type: kind,
             price: q.ltp,
@@ -727,7 +731,23 @@ window.ScannerAlerts = (function(){
       }
     }catch(e){}
   }
-  checkFyers();
-  setInterval(checkFyers, 10000);
+  async function checkDelta(){
+    try{
+      const r = await fetch("/api/forex/status");
+      const st = await r.json();
+      const p = document.getElementById("deltaPill");
+      if(p && st){
+        if(st.connected){
+          p.style.borderColor = "var(--good)";
+          p.style.background = "var(--good-soft)";
+          p.style.color = "var(--good)";
+          const balStr = (st.balance && st.balance > 0) ? (" ₹" + Number(st.balance).toLocaleString("en-IN")) : "";
+          p.textContent = "🌐 Delta (" + (st.mode ? st.mode.toUpperCase() : "LIVE") + balStr + ")";
+        }
+      }
+    }catch(e){}
+  }
+  checkDelta();
+  setInterval(checkDelta, 12000);
 })();
 """

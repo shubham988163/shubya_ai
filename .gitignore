@@ -13,6 +13,9 @@ data/fyers_token.json
 data/*
 logs/
 *.log
+*.db
+*.exe
+tools/
 
 # ...except the replay bundles. These are generated, synthetic candles with no
 # real positions or credentials, and trading/test_fno.py loads one of them — a

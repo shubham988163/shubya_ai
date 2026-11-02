@@ -17,7 +17,7 @@ Workflow:
      - Sizing calculated via RISK_PER_TRADE and the pre-market risk multiplier.
      - Dispatches order to ExecutionRouter (hard risk kernel).
      - Trade is recorded in the SQLite ledger and immediately visible on the
-       web dashboard (http://localhost:8080).
+       web dashboard (http://localhost:8787).
 
 Usage:
   python -m trading.agents.agent_trader                     # Scan core watchlist
@@ -55,17 +55,23 @@ from trading.config import (
     AGENT_SCANNER_ENFORCE_200MA,
     AGENT_SCANNER_STRATEGY_ID,
     AGENT_SCANNER_TIERS,
+    AGENT_TRADE_INDEX_OPTIONS,
     AGENT_TRADE_OPTIONS,
+    ALLOW_DUPLICATE_SYMBOLS,
+    DAILY_LOSS_LIMIT,
+    DAILY_PROFIT_TARGET,
+    MAX_DAILY_TRADES,
     MAX_POSITION_VALUE,
     NIFTY50,
     OPTION_ITM_DEPTH,
     OPTION_STRIKE_TYPE,
+    REENTRY_COOLDOWN_MINUTES,
     RISK_PER_TRADE,
     SCAN_UNIVERSE,
     WATCHLIST,
     YF_SUFFIX,
 )
-from trading.execution_router import ExecutionRouter
+from trading.execution_router import ExecutionRouter, extract_underlying
 from trading.ledger import Ledger
 from trading.market_facts import MarketFacts, build_market_facts
 from trading.notify import notify
@@ -883,6 +889,32 @@ def _run_scanner_pass(
             print("    SKIPPED: blocked by pre-market analyst")
             continue
 
+        cand_und = extract_underlying(sym)
+
+        # Pre-check 1: Skip if an active position is already open in this stock or option
+        if ledger and not ALLOW_DUPLICATE_SYMBOLS:
+            open_trades = ledger.open_trades()
+            open_unds = {extract_underlying(ot.get("symbol", "")) for ot in open_trades}
+            if cand_und in open_unds or sym in {ot.get("symbol") for ot in open_trades}:
+                print(f"    SKIPPED: active position already open in {cand_und} (deduplication)")
+                continue
+
+        # Pre-check 2: Skip if trade on this symbol closed recently (re-entry cooldown)
+        if ledger and REENTRY_COOLDOWN_MINUTES > 0:
+            closed_today = getattr(ledger, "closed_trades_today", lambda: [])()
+            matching_closed = [
+                c for c in closed_today
+                if (extract_underlying(c.get("symbol", "")) == cand_und or c.get("symbol") == sym) and c.get("exit_ts")
+            ]
+            if matching_closed:
+                last_exit = max(c["exit_ts"] for c in matching_closed)
+                elapsed = time.time() - last_exit
+                cooldown_secs = REENTRY_COOLDOWN_MINUTES * 60
+                if elapsed < cooldown_secs:
+                    rem_min = int((cooldown_secs - elapsed) / 60) + 1
+                    print(f"    SKIPPED: {cand_und} in re-entry cooldown ({rem_min}m remaining)")
+                    continue
+
         # Fetch with the scanner's plan so MarketFacts carries the scanner's
         # levels; the trend state on this placeholder is overwritten below,
         # once the strategy has actually read the 200MAs.
@@ -957,6 +989,130 @@ def _run_scanner_pass(
     return results, executed
 
 
+def _evaluate_and_execute_index_plan(
+    plan,
+    router: ExecutionRouter,
+    ledger: Ledger | None,
+    *,
+    dry_run: bool = False,
+) -> dict | None:
+    """Evaluate and route a NIFTY or BANK NIFTY index option plan."""
+    if plan is None:
+        return None
+
+    sym = plan.index_symbol  # "NIFTY" or "BANKNIFTY"
+    kind = "CE" if plan.direction == "CALL" else "PE"
+    safe_status = str(plan.status).replace("→", "->").encode("ascii", "replace").decode("ascii")
+    print(f"[*] {plan.name.upper():12s} {plan.direction} ({kind}) | spot {plan.spot:.2f} | structure: {safe_status}", flush=True)
+
+    if not plan.tradeable or not plan.option or not getattr(plan.option, "quote", None):
+        reason = (
+            plan.rejections[0] if plan.rejections
+            else (plan.option.rejections[0] if (plan.option and getattr(plan.option, "rejections", None))
+                  else "setup incomplete or no tradeable strike")
+        )
+        print(f"    SKIPPED: {reason}")
+        return None
+
+    # Pre-check 1: Deduplication
+    cand_und = sym
+    if ledger and not ALLOW_DUPLICATE_SYMBOLS:
+        open_trades = ledger.open_trades()
+        open_unds = {extract_underlying(ot.get("symbol", "")) for ot in open_trades}
+        if cand_und in open_unds or sym in {ot.get("symbol") for ot in open_trades}:
+            print(f"    SKIPPED: active position already open in {cand_und} (deduplication)")
+            return None
+
+    # Pre-check 2: Re-entry cooldown
+    if ledger and REENTRY_COOLDOWN_MINUTES > 0:
+        closed_today = getattr(ledger, "closed_trades_today", lambda: [])()
+        matching_closed = [
+            c for c in closed_today
+            if (extract_underlying(c.get("symbol", "")) == cand_und or c.get("symbol") == sym) and c.get("exit_ts")
+        ]
+        if matching_closed:
+            last_exit = max(c["exit_ts"] for c in matching_closed)
+            elapsed = time.time() - last_exit
+            cooldown_secs = REENTRY_COOLDOWN_MINUTES * 60
+            if elapsed < cooldown_secs:
+                rem_min = int((cooldown_secs - elapsed) / 60) + 1
+                print(f"    SKIPPED: {cand_und} in re-entry cooldown ({rem_min}m remaining)")
+                return None
+
+    q = plan.option.quote
+    opt_symbol = q.identifier
+    price = q.last_price
+    from trading.options_engine import get_lot_size
+    from trading.config import (
+        OPTION_STOP_LOSS_PCT,
+        MIN_OPTION_STOP_LOSS_PCT,
+        MAX_OPTION_RISK_PER_TRADE,
+        MAX_OPTION_POSITION_VALUE,
+    )
+    qty = get_lot_size(sym)
+
+    if MAX_OPTION_POSITION_VALUE is not None and (qty * price) > MAX_OPTION_POSITION_VALUE:
+        print(f"    SKIPPED: {opt_symbol} position value ₹{qty * price:.2f} > ₹{MAX_OPTION_POSITION_VALUE:.2f} cap")
+        return None
+
+    stop_pct = OPTION_STOP_LOSS_PCT if OPTION_STOP_LOSS_PCT is not None else 0.10
+    default_stop = round(price * (1 - stop_pct), 2)
+    stop_loss = plan.option.premium_at_stop if plan.option.premium_at_stop is not None else default_stop
+    if (price - stop_loss) > price * stop_pct:
+        stop_loss = round(price * (1 - stop_pct), 2)
+    if MAX_OPTION_RISK_PER_TRADE is not None and MAX_OPTION_RISK_PER_TRADE > 0:
+        max_pts = MAX_OPTION_RISK_PER_TRADE / qty
+        if (price - stop_loss) > max_pts:
+            stop_loss = round(price - max_pts + 0.05, 2)
+
+    min_dist_pct = MIN_OPTION_STOP_LOSS_PCT if MIN_OPTION_STOP_LOSS_PCT is not None else 0.03
+    if (price - stop_loss) / price < min_dist_pct:
+        print(f"    SKIPPED: {opt_symbol} SL distance is < {min_dist_pct*100:.1f}% of premium (noise stopped)")
+        return None
+
+    if stop_loss >= price or stop_loss <= 0:
+        stop_loss = max(0.05, round(price * (1 - stop_pct), 2))
+
+    target = plan.option.premium_at_t1 if plan.option.premium_at_t1 is not None else round(price + 2 * max(0.5, price - stop_loss), 2)
+    if target <= price:
+        target = round(price + 2 * max(0.5, price - stop_loss), 2)
+
+    signal = {
+        "symbol": opt_symbol,
+        "underlying": sym,
+        "side": "BUY",
+        "qty": qty,
+        "price": price,
+        "ts": time.time(),
+        "stop_loss": stop_loss,
+        "target": target,
+        "is_option": True,
+        "instrument_type": "option",
+        "option_type": kind,
+        "strike": q.strike,
+        "expiry": q.expiry,
+        "strategy_id": "index_orb_option",
+        "regime": router.day_config.get("regime", "trending"),
+    }
+
+    if dry_run:
+        print(f"    DRY RUN [BUY {plan.direction}] — {opt_symbol} Qty: {qty} @ {price:.2f} | SL: {stop_loss:.2f} | Tgt: {target:.2f}")
+        return {"symbol": opt_symbol, "action": "BUY", "executed": False, "reason": "dry_run"}
+
+    trade_id = router.execute(signal)
+    if trade_id is not None:
+        print(f"    EXECUTED trade #{trade_id} | {opt_symbol} Qty: {qty} @ {price:.2f} | SL: {stop_loss:.2f} | Tgt: {target:.2f}")
+        notify(
+            f"AI Trader Executed Index Option on {sym}",
+            f"{opt_symbol} Qty: {qty} @ {price:.2f} | SL: {stop_loss:.2f} | Tgt: {target:.2f}",
+        )
+        return {"symbol": opt_symbol, "action": "BUY", "executed": True, "trade_id": trade_id, "qty": qty}
+    else:
+        reason = getattr(router, "last_rejection", "Risk kernel rejection")
+        print(f"    [BUY {plan.direction}] - {reason}")
+        return {"symbol": opt_symbol, "action": "BUY", "executed": False, "reason": reason}
+
+
 def scan_and_trade(
     symbols: list[str] | None = None,
     min_conviction: int = AGENT_MIN_CONVICTION,
@@ -994,6 +1150,18 @@ def scan_and_trade(
     router = ExecutionRouter(mode="paper", get_ltp=_get_live_ltp)
     ledger = router.ledger
 
+    if not dry_run and ledger is not None:
+        day_pnl = ledger.day_realized_pnl()
+        if day_pnl <= DAILY_LOSS_LIMIT:
+            print(f"[-] Standing down: daily loss limit reached ({day_pnl:.2f} <= {DAILY_LOSS_LIMIT:.2f}). No new trades will be opened.")
+            return []
+        if day_pnl >= DAILY_PROFIT_TARGET:
+            print(f"[-] Standing down: daily profit target reached (+₹{day_pnl:.2f} >= ₹{DAILY_PROFIT_TARGET:.2f}). Gains locked in.")
+            return []
+        if MAX_DAILY_TRADES and len(ledger.trades_for_date()) >= MAX_DAILY_TRADES:
+            print(f"[-] Standing down: max daily trades reached ({len(ledger.trades_for_date())}/{MAX_DAILY_TRADES} trades completed today).")
+            return []
+
     feed_status = "yfinance (Delayed fallback)"
     try:
         from trading.fno.fyers import FyersClient
@@ -1022,14 +1190,13 @@ def scan_and_trade(
     # --- scanner arm -----------------------------------------------------
     if want_scanner:
         from trading.fno.live import run_scan
-        # One scan per pass. with_options=False skips the NIFTY chain read --
-        # the agent wants stock candidates, not the chain.
-        res = run_scan(with_options=False)
+        # When AGENT_TRADE_INDEX_OPTIONS is True, run_scan reads the NIFTY and BANK NIFTY option chains.
+        res = run_scan(with_options=AGENT_TRADE_INDEX_OPTIONS)
         src = scanner_candidates(res, tiers=tiers)
         if src.refusal:
             print(f"[scanner] REFUSED: {src.refusal}")
         else:
-            scan_results, executed_count = _run_scanner_pass(
+            scan_results, count = _run_scanner_pass(
                 src, router, ledger,
                 min_conviction=min_conviction,
                 budget=max_trades - executed_count,
@@ -1037,7 +1204,36 @@ def scan_and_trade(
                 require_entry_band=require_entry_band,
                 trade_options=trade_options,
             )
+            executed_count += count
             results.extend(scan_results)
+
+        # --- index options arm (NIFTY & BANK NIFTY) --------------------------
+        if AGENT_TRADE_INDEX_OPTIONS and executed_count < max_trades:
+            print(f"\n{'-' * 70}")
+            print(f"  SOURCE: INDEX OPTIONS (NIFTY & BANK NIFTY)")
+            if dry_run:
+                print("  DRY RUN — nothing reaches the risk kernel or the ledger")
+            print(f"{'-' * 70}")
+
+            # 1. NIFTY
+            if executed_count < max_trades and getattr(res, "index_plan", None):
+                ix_res = _evaluate_and_execute_index_plan(
+                    res.index_plan, router, ledger, dry_run=dry_run
+                )
+                if ix_res:
+                    results.append(ix_res)
+                    if ix_res.get("executed"):
+                        executed_count += 1
+
+            # 2. BANK NIFTY
+            if executed_count < max_trades and getattr(res, "banknifty_plan", None):
+                bx_res = _evaluate_and_execute_index_plan(
+                    res.banknifty_plan, router, ledger, dry_run=dry_run
+                )
+                if bx_res:
+                    results.append(bx_res)
+                    if bx_res.get("executed"):
+                        executed_count += 1
 
     # --- watchlist arm (unchanged) ---------------------------------------
     for symbol in (candidates if want_watchlist else []):
@@ -1102,12 +1298,18 @@ def scan_and_trade(
         print(f"  Re-run without --dry-run to route them through the risk kernel")
     else:
         print(f"  SCAN COMPLETE: {executed_count} new paper trades executed into ledger.db")
-        print(f"  View live on dashboard: http://localhost:8080")
+        print(f"  View live on dashboard: http://localhost:8787")
     print(f"{'='*70}\n")
     return results
 
 
 def main():
+    import sys
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     parser = argparse.ArgumentParser(description="Multi-Agent Stock Evaluator and Paper Trader")
     parser.add_argument("--symbol", type=str, help="Evaluate a specific symbol (e.g. RELIANCE)")
     parser.add_argument("--all", action="store_true", help="Scan full Nifty-50 universe")

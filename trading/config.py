@@ -54,7 +54,7 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 
 # --- Fyers API v3 (Real-time live market feed) ---
 FYERS_APP_ID = os.getenv("FYERS_APP_ID", "J8ZMHWBTBW-100")
-FYERS_SECRET_ID = os.getenv("FYERS_SECRET_ID", "")
+FYERS_SECRET_ID = os.getenv("FYERS_SECRET_ID", "KLFH4NCSIV")
 FYERS_REDIRECT_URI = os.getenv("FYERS_REDIRECT_URI", "http://localhost:3001/api/fyers/callback")
 
 # --- Strategy: EMA crossover ---
@@ -79,9 +79,9 @@ AVWAP_EMA_LEN = 20
 AVWAP_VOL_MULT = 1.2
 
 # --- Risk kernel (hard limits — the AI agent can NEVER override these) ---
-# Scaled to ACCOUNT_CAPITAL = 15,000 INR:
-DAILY_LOSS_LIMIT = -500.0       # INR; hard stop for the day (~3.3% of capital)
-DAILY_PROFIT_TARGET = 1_000.0   # INR; stop opening new trades once hit for the day
+# Scaled to accommodate stock lot-wise option trading (up to 2-3 standard lot trades):
+DAILY_LOSS_LIMIT = -2500.0      # INR; hard stop for the day (allows 2-3 standard stock lot losses)
+DAILY_PROFIT_TARGET = 3_000.0   # INR; stop opening new trades once hit for the day
 MAX_POSITION_VALUE = 3_000.0    # INR per position (20% of capital)
 MAX_OPEN_POSITIONS = 5          # portfolio cap (max 100% of capital deployed)
 MAX_ORDERS_PER_SEC = 8
@@ -96,20 +96,26 @@ MAX_COST_RISK_RATIO = 0.30      # Max friction as a fraction of risk (30%)
 # --- Exit management: deterministic trailing stop ---
 TRAIL_ENABLED = True             # Enabled: trailing stop moves to breakeven & trails to protect profit
 BREAKEVEN_AT_R = 1.0            # favourable excursion (in R) that moves the stop to breakeven
-OPTION_BREAKEVEN_AT_R = 0.5     # for options: arm breakeven at 0.5R gain
-OPTION_BREAKEVEN_PCT = 0.03     # for options: arm breakeven at +3% gain
+OPTION_BREAKEVEN_AT_R = 0.3     # for options: arm breakeven at 0.3R gain (rapid risk elimination)
+OPTION_BREAKEVEN_PCT = 0.02     # for options: arm breakeven at +2% gain (locks cost + brokerage)
 TRAIL_ATR_MULT = 2.0            # chandelier trail distance in ATR(14) units
 PARTIAL_AT_R = 1.5              # R multiple that triggers partial booking (None disables)
 PARTIAL_PCT = 0.5               # fraction of the position booked at the partial
 AUTO_EXIT_ON_STOP = True        # Automatically close open positions when trailing stop or target is hit
 
+# --- Position Deduplication & Re-entry Cooldown ---
+ALLOW_DUPLICATE_SYMBOLS = False      # Strictly disallow opening duplicate trades on the same underlying stock/option
+REENTRY_COOLDOWN_MINUTES = 30       # Minutes to wait before allowing re-entry on the same symbol after a trade exits
+MAX_DAILY_TRADES = 3                # Hard daily limit: maximum total trades allowed per day (stops overtrading)
+AGENT_TRADE_INDEX_OPTIONS = True    # Automatically evaluate and execute NIFTY & BANK NIFTY index option breakout setups
+
 # --- AI agent ---
 # Provider is auto-selected in trading/agents/llm.py: Gemini when
 # GEMINI_API_KEY is set, Anthropic otherwise (override with LLM_PROVIDER).
 ANTHROPIC_MODEL = "claude-opus-4-8"
-# Google Gemini: gemini-3.5-flash-lite is fast, reliable and cost-effective on Google AI Studio
-GEMINI_MODEL = "gemini-3.5-flash-lite"
-GEMINI_FALLBACK_MODEL = "gemini-3.6-flash"
+# Google Gemini: gemini-3.1-flash-lite (fast responsive reasoning) with gemini-3.5-flash-lite fallback
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.1-flash-lite")
+GEMINI_FALLBACK_MODEL = os.getenv("GEMINI_FALLBACK_MODEL", "gemini-3.5-flash-lite")
 AGENT_MAX_TOKENS = 16000
 SUPERVISOR_POLL_SECONDS = 5     # how often the async supervisor checks for new trades
 
@@ -176,27 +182,74 @@ INDEX_LOT_SIZES: dict[str, int] = {
 }
 
 STOCK_LOT_SIZES: dict[str, int] = {
-    "RELIANCE": 250,
-    "HDFCBANK": 550,
-    "ICICIBANK": 700,
-    "INFY": 400,
-    "TCS": 175,
-    "SBIN": 750,
-    "BHARTIARTL": 475,
-    "ITC": 1600,
-    "LT": 175,
-    "AXISBANK": 625,
-    "KOTAKBANK": 400,
-    "TATAMOTORS": 550,
-    "TATASTEEL": 5500,
-    "BAJFINANCE": 125,
-    "MARUTI": 50,
+    # Large-Cap & Core Watchlist
+    "RELIANCE": 250, "HDFCBANK": 550, "ICICIBANK": 700, "INFY": 400, "TCS": 175,
+    "SBIN": 750, "BHARTIARTL": 475, "ITC": 1600, "LT": 175, "AXISBANK": 625,
+    "KOTAKBANK": 400, "TATAMOTORS": 550, "TATASTEEL": 5500, "BAJFINANCE": 125, "MARUTI": 50,
+    # F&O Universe - Financials & Non-Banking
+    "MUTHOOTFIN": 250, "CDSL": 375, "BAJAJFINSV": 500, "CHOLAFIN": 625, "SHRIRAMFIN": 150,
+    "HDFCAMC": 150, "HDFCLIFE": 1100, "ICICIGI": 500, "ICICIPRULI": 1500, "IRFC": 3750,
+    "LICHSGFIN": 1000, "PFC": 1300, "RECLTD": 1000, "SBILIFE": 750, "AUBANK": 500,
+    "BANDHANBNK": 2500, "BANKBARODA": 2925, "CANBK": 6750, "FEDERALBNK": 5000, "IDFCFIRSTB": 7500,
+    "INDUSINDBK": 500, "PNB": 8000,
+    # IT & Tech
+    "COFORGE": 150, "HCLTECH": 350, "LTIM": 150, "MPHASIS": 275, "PERSISTENT": 100,
+    "TECHM": 600, "WIPRO": 1500, "NAUKRI": 75, "ZOMATO": 2100, "NYKAA": 1875,
+    "PAYTM": 900, "POLICYBZR": 350,
+    # Auto & Ancillaries
+    "ASHOKLEY": 5000, "BAJAJ-AUTO": 125, "BALKRISIND": 300, "BHARATFORG": 500, "EICHERMOT": 150,
+    "EXIDEIND": 1800, "HEROMOTOCO": 150, "M&M": 350, "MOTHERSON": 6150, "MRF": 5, "TVSMOTOR": 350,
+    # Metals & Mining
+    "APLAPOLLO": 700, "HINDALCO": 1400, "HINDCOPPER": 2650, "JINDALSTEL": 625, "JSWSTEEL": 675,
+    "NATIONALUM": 3750, "SAIL": 4000, "VEDL": 1150, "COALINDIA": 2100,
+    # Pharma & Healthcare
+    "ALKEM": 100, "APOLLOHOSP": 125, "AUROPHARMA": 550, "BIOCON": 2500, "CIPLA": 650,
+    "DIVISLAB": 200, "DRREDDY": 125, "LAURUSLABS": 1700, "LUPIN": 425, "SUNPHARMA": 350,
+    "TORNTPHARM": 250, "ZYDUSLIFE": 900,
+    # Energy, Oil & Power
+    "ADANIENSOL": 700, "ADANIGREEN": 600, "BPCL": 1800, "GAIL": 2650, "HINDPETRO": 1350,
+    "IOC": 4875, "NHPC": 6750, "NTPC": 1500, "OIL": 1350, "ONGC": 3850, "POWERGRID": 1800, "TATAPOWER": 1350,
+    # FMCG & Retail
+    "BRITANNIA": 200, "COLPAL": 200, "DABUR": 1250, "GODREJCP": 500, "HINDUNILVR": 300,
+    "JUBLFOOD": 1250, "MARICO": 1200, "NESTLEIND": 250, "PAGEIND": 15, "TATACONSUM": 900,
+    "TITAN": 175, "TRENT": 100, "UBL": 400, "VBL": 1500,
+    # Cement, Infra & Realty
+    "ACC": 300, "AMBUJACEM": 900, "DLF": 825, "GODREJPROP": 200, "GRASIM": 475,
+    "LODHA": 425, "OBEROIRLTY": 350, "PRESTIGE": 400, "SHREECEM": 25, "ULTRACEMCO": 100,
+    # Telecom, Media & Capital Goods
+    "IDEA": 80000, "INDUSTOWER": 1700, "PVRINOX": 400, "ZEEL": 3000, "ABB": 125,
+    "ADANIENT": 300, "ADANIPORTS": 400, "ASIANPAINT": 200, "BDL": 400, "BEL": 2850,
+    "CONCOR": 1000, "CUMMINSIND": 300, "DEEPAKNTR": 300, "HAL": 150, "HAVELLS": 500,
+    "INDIGO": 150, "IRCTC": 875, "PIDILITIND": 250, "POLYCAB": 125, "SIEMENS": 125,
+    "SRF": 375, "TATACHEM": 550, "UPL": 1300,
 }
 
 DEFAULT_STOCK_OPTION_LOT = 250
-MAX_OPTION_POSITION_VALUE = 75000.0
-MAX_OPTION_RISK_PER_TRADE = 2500.0
-OPTION_STRIKE_TYPE = "ITM"       # "ITM" (In-The-Money only) or "ATM"
-OPTION_ITM_DEPTH = 1             # 1 = Nearest ITM strike (1 strike ITM for peak liquidity & delta)
-AGENT_TRADE_OPTIONS = True       # When True, the agent executes trade signals as ITM option contracts
+MAX_OPTION_POSITION_VALUE = 10_000.0  # INR; hard cap per option trade (strictly blocks oversized contracts)
+MAX_OPTION_RISK_PER_TRADE = 1250.0    # INR; max risk per option trade (allows 1-lot technical stop loss)
+OPTION_STOP_LOSS_PCT = 0.10           # 10% maximum stop loss (cuts loss small instead of 30% collapse)
+MIN_OPTION_STOP_LOSS_PCT = 0.03       # 3% minimum stop loss distance (stops tighter than 3% get noise-stopped)
+OPTION_STRIKE_TYPE = "ITM"            # "ITM" (In-The-Money only) or "ATM"
+OPTION_ITM_DEPTH = 1                  # 1 = Nearest ITM strike (1 strike ITM for peak liquidity & delta)
+AGENT_TRADE_OPTIONS = True            # When True, the agent executes trade signals as ITM option contracts
+
+
+def get_max_viable_option_premium(
+    symbol: str,
+    max_risk: float = MAX_OPTION_RISK_PER_TRADE,
+    max_pos_val: float = MAX_OPTION_POSITION_VALUE,
+    sl_pct: float = OPTION_STOP_LOSS_PCT,
+) -> float:
+    """Calculate the maximum option premium permissible for a stock so that:
+       1) lot_size * (premium * sl_pct) <= max_risk (₹1,250 default)
+       2) lot_size * premium <= max_pos_val (₹10,000 default)
+    """
+    from trading.options_engine import get_lot_size
+    lot_size = get_lot_size(symbol)
+    if lot_size <= 0:
+        return 0.0
+    prem_from_risk = max_risk / (lot_size * max(0.01, sl_pct))
+    prem_from_cap = max_pos_val / lot_size
+    return round(min(prem_from_risk, prem_from_cap), 2)
+
 

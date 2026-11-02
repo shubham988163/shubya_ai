@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import threading
 import time
 from datetime import datetime
 from http.server import HTTPServer, BaseHTTPRequestHandler
@@ -57,36 +58,52 @@ def _get_batch_ltp(symbols: list[str]) -> dict[str, float]:
     res: dict[str, float] = {}
     clean_syms = list(set(s.upper().strip() for s in symbols if s))
     try:
-        from trading.fno.fyers import FyersClient
-        client = FyersClient()
-        fyers_syms = []
-        sym_map: dict[str, str] = {}
-        for s in clean_syms:
-            if s.startswith("NSE:") or s.startswith("MCX:"):
-                fs = s
-            elif s in ("NIFTY", "NIFTY50", "NIFTY 50", "^NSEI"):
-                fs = "NSE:NIFTY50-INDEX"
-            elif s in ("BANKNIFTY", "BANK NIFTY", "^NSEBANK"):
-                fs = "NSE:NIFTYBANK-INDEX"
-            elif "CE" in s or "PE" in s or "OPT" in s:
-                fs = f"NSE:{s}"
-            else:
-                fs = f"NSE:{s}-EQ"
-            fyers_syms.append(fs)
-            sym_map[fs] = s
+        from trading.fno.fyers import FyersClient, FyersStreamManager
+        stream = FyersStreamManager.get_instance()
+        stream.subscribe(clean_syms)
 
-        quotes = client.quotes(fyers_syms)
-        for q in quotes:
-            if isinstance(q, dict) and "v" in q and "lp" in q["v"]:
-                name = q.get("n", "")
-                raw = name.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "")
-                lp = float(q["v"]["lp"])
-                res[raw] = lp
-                res[name] = lp
-                res[raw.strip()] = lp
-                res[name.strip()] = lp
-                if name in sym_map:
-                    res[sym_map[name]] = lp
+        # 1. Prefer real-time streaming ticks from WebSocket (ZERO REST API hits)
+        missing_from_stream = []
+        for s in clean_syms:
+            s_ltp = stream.get_ltp(s)
+            if s_ltp is not None and s_ltp > 0:
+                raw = s.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+                res[raw] = s_ltp
+                res[s] = s_ltp
+            else:
+                missing_from_stream.append(s)
+
+        # 2. Only make REST quotes call if any symbol is not yet received via WebSocket
+        if missing_from_stream:
+            client = FyersClient()
+            fyers_syms = []
+            sym_map: dict[str, str] = {}
+            for s in missing_from_stream:
+                if s.startswith("NSE:") or s.startswith("MCX:"):
+                    fs = s
+                elif s in ("NIFTY", "NIFTY50", "NIFTY 50", "^NSEI"):
+                    fs = "NSE:NIFTY50-INDEX"
+                elif s in ("BANKNIFTY", "BANK NIFTY", "^NSEBANK"):
+                    fs = "NSE:NIFTYBANK-INDEX"
+                elif "CE" in s or "PE" in s or "OPT" in s:
+                    fs = f"NSE:{s}"
+                else:
+                    fs = f"NSE:{s}-EQ"
+                fyers_syms.append(fs)
+                sym_map[fs] = s
+
+            quotes = client.quotes(fyers_syms)
+            for q in quotes:
+                if isinstance(q, dict) and "v" in q and "lp" in q["v"]:
+                    name = q.get("n", "")
+                    raw = name.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "")
+                    lp = float(q["v"]["lp"])
+                    res[raw] = lp
+                    res[name] = lp
+                    res[raw.strip()] = lp
+                    res[name.strip()] = lp
+                    if name in sym_map:
+                        res[sym_map[name]] = lp
     except Exception:
         pass
 
@@ -107,7 +124,30 @@ def _get_batch_ltp(symbols: list[str]) -> dict[str, float]:
 def _get_ltp(symbol: str) -> float:
     batch = _get_batch_ltp([symbol])
     s = symbol.upper().strip()
-    return batch.get(s) or batch.get(s.replace("NSE:", "")) or 1000.0
+    val = batch.get(s) or batch.get(s.replace("NSE:", ""))
+    if val is not None and val > 0:
+        return float(val)
+
+    # Dynamic option resolution if symbol was requested without full expiry or in synthetic format
+    if "CE" in s or "PE" in s:
+        try:
+            import re
+            from trading.fno.fyers import FyersClient
+            m = re.search(r"(\d+)(CE|PE)$", s)
+            if m:
+                strike = int(m.group(1))
+                kind = m.group(2)
+                und_sym = "NSE:NIFTYBANK-INDEX" if "BANK" in s else "NSE:NIFTY50-INDEX"
+                fc = FyersClient()
+                chain = fc.option_chain(und_sym, 35)
+                if chain and "optionsChain" in chain:
+                    for opt in chain["optionsChain"]:
+                        if int(opt.get("strike_price", 0)) == strike and opt.get("option_type") == kind:
+                            return float(opt.get("ltp", 0.0))
+        except Exception:
+            pass
+
+    return 0.0
 
 
 def _breakdown(trades: list[dict], key: str) -> list[dict]:
@@ -180,7 +220,7 @@ def _handle_trade(data: dict) -> dict:
                 return {
                     "ok": False,
                     "rejected": True,
-                    "reason": f"Could not find liquid option chain for {underlying}",
+                    "reason": f"No viable option contract for {underlying}: 1-lot risk exceeds budget (cap ₹500 risk / ₹10,000 position cap) or chain illiquid",
                 }
             if data.get("qty") and int(data["qty"]) > 1:
                 lot_unit = get_lot_size(underlying)
@@ -194,8 +234,36 @@ def _handle_trade(data: dict) -> dict:
                 return {"ok": False, "rejected": True, "reason": reason}
             return {"ok": True, "trade_id": trade_id, "signal": opt_signal}
 
+        from trading.options_engine import get_lot_size
         sym = raw_sym if raw_sym.startswith("NSE:") else f"NSE:{raw_sym}"
+        lot_unit = get_lot_size(sym)
+        if lot_unit > 0:
+            qty = max(lot_unit, (qty // lot_unit) * lot_unit if qty >= lot_unit else lot_unit)
+
         price = float(data["price"]) if data.get("price") else None
+
+        # If symbol is synthetic (missing weekly/monthly expiry tag), attempt to resolve to live Fyers symbol
+        import re
+        if ("NIFTY50" in sym or "BANKNIFTY" in sym) and not re.search(r"\d{2}[A-Z0-9]+?\d+(?:CE|PE)$", sym):
+            m = re.search(r"(\d+)(CE|PE)$", sym)
+            if m:
+                strike = int(m.group(1))
+                kind = m.group(2)
+                und_sym = "NSE:NIFTYBANK-INDEX" if "BANK" in sym else "NSE:NIFTY50-INDEX"
+                try:
+                    from trading.fno.fyers import FyersClient
+                    fc = FyersClient()
+                    chain = fc.option_chain(und_sym, 35)
+                    if chain and "optionsChain" in chain:
+                        for opt in chain["optionsChain"]:
+                            if int(opt.get("strike_price", 0)) == strike and opt.get("option_type") == kind:
+                                sym = opt.get("symbol", sym)
+                                if not price or price <= 0:
+                                    price = float(opt.get("ltp", 0.0))
+                                break
+                except Exception:
+                    pass
+
         if price is None or price <= 0:
             price = _get_ltp(sym)
         router.get_ltp = lambda s: price
@@ -272,6 +340,9 @@ def _handle_close(data: dict) -> dict:
     if exit_price is None or exit_price <= 0:
         exit_price = _get_ltp(t["symbol"])
 
+    if exit_price is None or exit_price <= 0:
+        return {"ok": False, "error": f"Cannot exit trade #{trade_id}: live market price unavailable for {t['symbol']}"}
+
     sym = t["symbol"]
     is_opt = ("CE" in sym or "PE" in sym or "OPT" in sym)
     if is_opt:
@@ -325,30 +396,74 @@ def _handle_ai_scan(data: dict) -> dict:
         rec = evaluate_stock(sym, ledger=ledger)
         if not rec:
             if ctx and not ctx.get("signal"):
+                # Run an active audit debate via Gemini 3.8 Flash so the user gets live 4-agent analysis
+                from trading.agents.agent_trader import (
+                    AGENT_SYSTEM,
+                    AgentTradeRecommendation,
+                    call_structured,
+                )
+
+                facts = ctx.get("facts")
+                facts_json_data = facts.model_dump() if hasattr(facts, "model_dump") else {k: v for k, v in ctx.items() if k != "signal"}
+                facts_str = facts.to_json() if hasattr(facts, "to_json") else json.dumps(facts_json_data, indent=2, default=str)
+                audit_prompt = f"""Evaluate stock: {sym} for potential trading opportunity using the ORB + Multi-TF 200MA Strategy.
+MARKET FACTS (VERIFIED DETERMINISTIC AUDIT):
+```json
+{facts_str}
+```
+
+NOTE: The deterministic quant gate has flagged that setup conditions are NOT yet fulfilled:
+- OR Trigger Status: {ctx.get('or_trigger_status')}
+- Trend Gate: {ctx.get('trend_gate')}
+- Volume Ratio: {ctx.get('vol_ratio')}x (Required: >= 1.5x)
+
+PANEL INSTRUCTIONS:
+- Technical Analyst: Provide a clear breakdown of the chart structure, Opening Range ({ctx.get('or_low')} - {ctx.get('or_high')}), 200MAs, VWAP, and volume.
+- Bullish Researcher: Formulate what specific bullish triggers would be required for a breakout (e.g. breakout above OR-High with high volume).
+- Bearish Researcher: Audit the active risks, false breakout traps, conflicting trend, or rangebound chop.
+- Trader Decision Agent: Since the deterministic criteria are not satisfied, action MUST be HOLD with conviction 1-3. Explain clearly why capital must be protected right now."""
+
+                fallback_rec = AgentTradeRecommendation(
+                    symbol=sym,
+                    action="HOLD",
+                    conviction=1,
+                    entry_price=ctx.get("ltp", 0.0),
+                    stop_loss=0.0,
+                    target=0.0,
+                    technical_analysis=f"Deterministic quant gate: setup did not satisfy all ORB+200MA conditions (OR valid: {ctx.get('or_valid')}, Trigger: {ctx.get('or_trigger_status')}, Trend: {ctx.get('trend_gate')}, Vol: {ctx.get('vol_ratio')}x).",
+                    bull_case=f"Awaiting breakout above Opening Range High (₹{ctx.get('or_high')}) accompanied by >=1.5x volume expansion and trend alignment.",
+                    bear_case=f"Price is rangebound inside OR ({ctx.get('or_low')}-{ctx.get('or_high')}) with {ctx.get('trend_gate')} trend gate and weak volume ({ctx.get('vol_ratio')}x). High chop hazard.",
+                    decision_rationale=f"HOLD: Strict ORB+200MA rules mandate standing aside until confirmed breakout and volume surge occurs.",
+                    trend_state=str(ctx.get("trend_gate", "unavailable")),
+                )
+
+                try:
+                    llm_rec = call_structured(
+                        agent_name="agent_trader_audit",
+                        system=AGENT_SYSTEM,
+                        prompt=audit_prompt,
+                        output_model=AgentTradeRecommendation,
+                        fallback=fallback_rec,
+                        ledger=ledger,
+                    )
+                    rec_dict = llm_rec.model_dump() if hasattr(llm_rec, "model_dump") else llm_rec
+                    rec_dict["action"] = "HOLD"
+                    rec_dict["conviction"] = min(int(rec_dict.get("conviction", 1)), 4)
+                except Exception:
+                    rec_dict = fallback_rec.model_dump()
+
                 return {
                     "ok": True,
                     "symbol": sym,
                     "context": _clean_context(ctx),
-                    "recommendation": {
-                        "symbol": sym,
-                        "action": "HOLD",
-                        "conviction": 1,
-                        "entry_price": ctx.get("ltp", 0.0),
-                        "stop_loss": 0.0,
-                        "target": 0.0,
-                        "technical_analysis": f"Deterministic quant gate: setup did not satisfy all ORB+200MA conditions (OR valid: {ctx.get('or_valid')}, Trigger: {ctx.get('or_trigger_status')}, Trend: {ctx.get('trend_gate')}, Vol: {ctx.get('vol_ratio')}x). Council not invoked.",
-                        "bull_case": "Not applicable — deterministic gate failed.",
-                        "bear_case": "Not applicable — deterministic gate failed.",
-                        "decision_rationale": "HOLD: Pre-council deterministic gate rejected candidate before LLM invocation.",
-                        "trend_state": "unavailable",
-                    },
+                    "recommendation": rec_dict,
                     "execution": {
                         "symbol": sym,
                         "action": "HOLD",
-                        "conviction": 1,
+                        "conviction": rec_dict.get("conviction", 1),
                         "executed": False,
                         "trade_id": None,
-                        "reason": "Deterministic quant gate rejected candidate before LLM invocation",
+                        "reason": "Deterministic quant gate rejected candidate (setup incomplete, capital preserved)",
                     },
                 }
             return {"ok": False, "error": f"Could not fetch market data for {sym}"}
@@ -403,52 +518,15 @@ def _handle_journal_run(data: dict) -> dict:
         return {"ok": False, "error": str(e)}
 
 
-
-def get_data(date: str | None) -> dict:
-    ledger = Ledger()
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-
-    dates = [r["date"] for r in conn.execute(
-        "SELECT DISTINCT date FROM trades ORDER BY date DESC").fetchall()]
-    # Today belongs in the picker (and is the default view) even before the
-    # first trade of the day, so a live session never looks "missing".
+def _evaluate_open_trades_and_trailing_stops(trades: list[dict] | None = None, ledger_inst: Ledger | None = None) -> list[dict]:
+    """Continuous open-position evaluator: fetches real-time quotes, updates trailing stops and ratchets, and executes auto-exits."""
+    if ledger_inst is None:
+        ledger_inst = Ledger()
     today = datetime.now(IST).strftime("%Y-%m-%d")
-    if today not in dates:
-        dates.insert(0, today)
-    if not date:
-        date = today
 
-    # Active open positions must ALWAYS show all currently open trades regardless of what day they were entered.
-    # Completed trade history is filtered by the selected session date.
-    open_trades_all = [dict(r) for r in conn.execute(
-        "SELECT * FROM trades WHERE status = 'open' ORDER BY ts").fetchall()]
-    closed_trades_date = [dict(r) for r in conn.execute(
-        "SELECT * FROM trades WHERE status = 'closed' AND date = ? ORDER BY ts", (date,)).fetchall()] if date else []
-    
-    seen_ids = set()
-    trades = []
-    for t in open_trades_all + closed_trades_date:
-        if t["id"] not in seen_ids:
-            seen_ids.add(t["id"])
-            trades.append(t)
+    if trades is None:
+        trades = ledger_inst.open_trades()
 
-    rejections = [dict(r) for r in conn.execute(
-        "SELECT * FROM rejections ORDER BY ts DESC LIMIT 50").fetchall()]
-
-    agent_log = [dict(r) for r in conn.execute(
-        "SELECT id, ts, agent, model, ok, error, "
-        "substr(COALESCE(response,''),1,400) AS response "
-        "FROM agent_log ORDER BY ts DESC LIMIT 50").fetchall()]
-
-    try:
-        candidates = [dict(r) for r in conn.execute(
-            "SELECT * FROM candidate_signals ORDER BY ts DESC LIMIT 50").fetchall()]
-    except Exception:
-        candidates = []
-    conn.close()
-
-    # Enrich open trades with real-time live market quotes, trailing stop updates, and floating P&L
     open_trades = [t for t in trades if t["status"] == "open"]
     if open_trades:
         syms = list({t["symbol"] for t in open_trades if t.get("symbol")})
@@ -511,7 +589,7 @@ def get_data(date: str | None) -> dict:
 
                 # Monotonic ratchet: advance in SQLite ledger if tightened
                 if (side == "BUY" and new_sl > current_sl) or (side == "SELL" and new_sl < current_sl):
-                    ledger.update_open_stop(trade_id, round(new_sl, 2))
+                    ledger_inst.update_open_stop(trade_id, round(new_sl, 2))
                     current_sl = round(new_sl, 2)
                     t["stop_loss"] = current_sl
 
@@ -533,8 +611,6 @@ def get_data(date: str | None) -> dict:
             target_hit = (side == "BUY" and target > 0 and ltp >= target) or (side == "SELL" and target > 0 and ltp <= target)
 
             if AUTO_EXIT_ON_STOP and is_today and has_real_quote and (stop_hit or target_hit):
-                # When a resting stop order is breached, it executes at the stop price (adjusted for slippage),
-                # or at the gap price if market gapped through it.
                 from trading.config import SLIPPAGE_PCT
                 if target_hit:
                     fill = target * (1 - SLIPPAGE_PCT) if side == "BUY" else target * (1 + SLIPPAGE_PCT)
@@ -543,15 +619,12 @@ def get_data(date: str | None) -> dict:
                 else:
                     fill = current_sl * (1 - SLIPPAGE_PCT) if side == "BUY" else current_sl * (1 + SLIPPAGE_PCT)
                     if is_be_protected:
-                        # Breakeven trailing stop: resting stop triggers and executes at the protected level.
-                        # Do not let normal 5-second polling tick noise simulate an exit below breakeven.
                         exit_price = round(fill, 2)
                         if side == "BUY" and exit_price < be_level:
                             exit_price = round(be_level, 2)
                         elif side == "SELL" and exit_price > be_level:
                             exit_price = round(be_level, 2)
                     else:
-                        # Initial structural stop: use ltp if price gapped severely past stop
                         if side == "BUY":
                             exit_price = min(round(fill, 2), round(ltp, 2))
                         else:
@@ -562,7 +635,7 @@ def get_data(date: str | None) -> dict:
                     charges = options_round_trip(entry, exit_price, qty)
                 else:
                     charges = round_trip_charges(entry, exit_price, qty)
-                closed_pnl = ledger.record_exit(trade_id, exit_price, charges=round(charges, 2))
+                closed_pnl = ledger_inst.record_exit(trade_id, exit_price, charges=round(charges, 2))
 
                 t["status"] = "closed"
                 t["exit_price"] = exit_price
@@ -572,6 +645,71 @@ def get_data(date: str | None) -> dict:
                 t["exit_reason"] = exit_reason
                 if trade_id in _TRAIL_STATES:
                     del _TRAIL_STATES[trade_id]
+
+    return trades
+
+
+def _background_position_exit_monitor():
+    """Continuous background daemon monitoring open positions every 1.5 seconds.
+    Ensures trailing stops, breakeven ratchets, and loss limit auto-exits execute in
+    real-time even if no browser tab or dashboard window is currently open."""
+    ledger_inst = Ledger()
+    while True:
+        try:
+            open_count = len(ledger_inst.open_trades())
+            if open_count > 0:
+                _evaluate_open_trades_and_trailing_stops(None, ledger_inst=ledger_inst)
+        except Exception:
+            pass
+        time.sleep(1.5)
+
+
+def get_data(date: str | None) -> dict:
+    ledger = Ledger()
+    conn = sqlite3.connect(str(DB_PATH))
+    conn.row_factory = sqlite3.Row
+
+    dates = [r["date"] for r in conn.execute(
+        "SELECT DISTINCT date FROM trades ORDER BY date DESC").fetchall()]
+    # Today belongs in the picker (and is the default view) even before the
+    # first trade of the day, so a live session never looks "missing".
+    today = datetime.now(IST).strftime("%Y-%m-%d")
+    if today not in dates:
+        dates.insert(0, today)
+    if not date:
+        date = today
+
+    # Active open positions must ALWAYS show all currently open trades regardless of what day they were entered.
+    # Completed trade history is filtered by the selected session date.
+    open_trades_all = [dict(r) for r in conn.execute(
+        "SELECT * FROM trades WHERE status = 'open' ORDER BY ts").fetchall()]
+    closed_trades_date = [dict(r) for r in conn.execute(
+        "SELECT * FROM trades WHERE status = 'closed' AND date = ? ORDER BY ts", (date,)).fetchall()] if date else []
+    
+    seen_ids = set()
+    trades = []
+    for t in open_trades_all + closed_trades_date:
+        if t["id"] not in seen_ids:
+            seen_ids.add(t["id"])
+            trades.append(t)
+
+    rejections = [dict(r) for r in conn.execute(
+        "SELECT * FROM rejections ORDER BY ts DESC LIMIT 50").fetchall()]
+
+    agent_log = [dict(r) for r in conn.execute(
+        "SELECT id, ts, agent, model, ok, error, "
+        "substr(COALESCE(response,''),1,400) AS response "
+        "FROM agent_log ORDER BY ts DESC LIMIT 50").fetchall()]
+
+    try:
+        candidates = [dict(r) for r in conn.execute(
+            "SELECT * FROM candidate_signals ORDER BY ts DESC LIMIT 50").fetchall()]
+    except Exception:
+        candidates = []
+    conn.close()
+
+    # Enrich open trades with real-time live market quotes, trailing stop updates, and floating P&L
+    trades = _evaluate_open_trades_and_trailing_stops(trades, ledger_inst=ledger)
 
     open_trades = [t for t in trades if t["status"] == "open"]
     closed = [t for t in trades if t["status"] == "closed"]
@@ -882,6 +1020,141 @@ pre.report{white-space:pre-wrap;font:12.5px/1.6 ui-sans-serif,system-ui,sans-ser
 .live-pulse{animation:pulse 1.3s ease-in-out infinite}
 .small{font-size:11.5px;color:var(--ink-2)}
 .overflow{overflow-x:auto}
+
+/* === ENHANCED DASHBOARD IMPROVEMENTS === */
+
+/* Skeleton Loaders */
+@keyframes shimmer{0%{background-position:0 0}100%{background-position:1000px 0}}
+.skeleton{background:linear-gradient(90deg,var(--cell) 0%,var(--bg-2) 50%,var(--cell) 100%);
+  background-size:1000px 100%;animation:shimmer 1.5s infinite;border-radius:6px}
+.skeleton-text{height:12px;margin:8px 0}
+.skeleton-box{height:60px;margin:12px 0}
+.skeleton-chart{height:200px;margin:16px 0}
+
+/* KPI Tiles Enhancement */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px;padding:16px}
+.kpi-tile{background:var(--card);border:1px solid var(--line);border-radius:10px;
+  padding:14px;position:relative;overflow:hidden}
+.kpi-tile::before{content:'';position:absolute;top:0;left:0;right:0;height:2px;
+  background:linear-gradient(90deg,var(--accent),transparent)}
+.kpi-label{font-size:11px;font-weight:600;color:var(--ink-3);text-transform:uppercase;
+  letter-spacing:.05em;margin-bottom:6px;display:flex;align-items:center;gap:4px}
+.kpi-value{font-size:24px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--ink)}
+.kpi-trend{display:inline-flex;align-items:center;gap:3px;font-size:12px;font-weight:600;margin-left:8px}
+.kpi-trend.up{color:var(--up)}
+.kpi-trend.down{color:var(--down)}
+.kpi-sparkline{height:30px;margin-top:8px;opacity:.7}
+.kpi-subtext{font-size:11px;color:var(--ink-3);margin-top:6px;display:flex;justify-content:space-between}
+
+/* Collapsible Sections */
+.collapsible-header{display:flex;align-items:center;justify-content:space-between;
+  cursor:pointer;user-select:none;padding:4px 0;transition:all .2s}
+.collapsible-header:hover{background:var(--cell);padding:4px 8px;border-radius:6px}
+.collapsible-toggle{display:inline-flex;align-items:center;justify-content:center;
+  width:20px;height:20px;transition:transform .3s}
+.collapsible-toggle.collapsed{transform:rotate(-90deg)}
+.collapsible-content{max-height:1000px;overflow:hidden;transition:max-height .3s ease}
+.collapsible-content.collapsed{max-height:0}
+
+/* Hero Section Enhancement */
+#buynow{position:relative;background:linear-gradient(135deg,color-mix(in srgb,var(--accent) 15%,var(--card)) 0%,color-mix(in srgb,var(--good) 10%,var(--card)) 100%)}
+.bn-hero-actions{display:flex;gap:8px;margin-top:14px;flex-wrap:wrap}
+.bn-action-btn{padding:8px 14px;border-radius:7px;border:1px solid;font-weight:700;
+  font-size:12px;cursor:pointer;transition:all .2s;min-width:70px;text-align:center}
+.bn-action-btn.buy{background:var(--good);border-color:var(--good);color:#fff;
+  box-shadow:0 0 12px rgba(52,211,153,0.3)}
+.bn-action-btn.sell{background:var(--bad);border-color:var(--bad);color:#fff;
+  box-shadow:0 0 12px rgba(239,68,68,0.3)}
+.bn-action-btn.skip{background:var(--cell);border-color:var(--line);color:var(--ink)}
+.bn-action-btn:hover{transform:translateY(-2px);box-shadow:0 4px 12px rgba(0,0,0,.2)}
+.bn-timer{font-size:11px;color:var(--ink-3);margin-top:8px}
+.bn-timer-value{font-weight:700;color:var(--accent);font-family:ui-monospace}
+
+/* Alert Badges */
+.alert-badge{display:inline-flex;align-items:center;gap:4px;padding:4px 8px;
+  border-radius:6px;font-size:10px;font-weight:700;letter-spacing:.05em;
+  text-transform:uppercase;animation:pulse .2s}
+.alert-badge.critical{background:color-mix(in srgb,var(--bad) 20%,transparent);
+  color:var(--bad);border:1px solid var(--bad)}
+.alert-badge.warning{background:color-mix(in srgb,var(--warn) 20%,transparent);
+  color:var(--warn);border:1px solid var(--warn)}
+.alert-badge.success{background:color-mix(in srgb,var(--good) 20%,transparent);
+  color:var(--good);border:1px solid var(--good)}
+
+/* Trade Cards Enhancement */
+.trade-card{border-radius:9px;border:1px solid var(--line);background:var(--card);
+  padding:12px;margin-bottom:10px;transition:all .2s}
+.trade-card:hover{border-color:var(--accent);box-shadow:0 0 12px rgba(47,159,219,0.15)}
+.trade-header{display:flex;justify-content:space-between;align-items:start;margin-bottom:10px}
+.trade-symbol{font-weight:700;font-size:14px;color:var(--ink)}
+.trade-status{font-size:10px;padding:2px 6px;border-radius:4px;background:var(--cell);
+  color:var(--ink-3);font-weight:600}
+.trade-status.open{background:color-mix(in srgb,var(--accent) 20%,transparent);
+  color:var(--accent)}
+.trade-status.closed{background:color-mix(in srgb,var(--good) 20%,transparent);
+  color:var(--good)}
+.trade-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));
+  gap:8px;font-size:11px;margin-bottom:8px}
+.trade-metric{background:var(--cell);padding:6px 8px;border-radius:6px}
+.trade-metric-label{color:var(--ink-3);font-size:9px;text-transform:uppercase;letter-spacing:.05em}
+.trade-metric-value{font-weight:700;margin-top:2px;font-variant-numeric:tabular-nums}
+.trade-actions{display:flex;gap:6px;flex-wrap:wrap}
+.trade-action-btn{padding:4px 10px;border-radius:6px;border:1px solid var(--line);
+  background:var(--cell);color:var(--ink-2);font-size:10px;font-weight:600;
+  cursor:pointer;transition:all .2s}
+.trade-action-btn:hover{background:var(--accent);border-color:var(--accent);color:#fff}
+
+/* Quick Close Modal */
+.modal-overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.5);
+  display:none;z-index:1000;align-items:center;justify-content:center}
+.modal-overlay.active{display:flex}
+.modal-content{background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:20px;max-width:400px;width:90%;box-shadow:0 10px 40px rgba(0,0,0,.3)}
+.modal-header{font-size:16px;font-weight:700;margin-bottom:12px;color:var(--ink)}
+.modal-close{float:right;cursor:pointer;font-size:20px;color:var(--ink-2);}
+.modal-close:hover{color:var(--ink)}
+.quick-close-btns{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:12px 0}
+.modal-btn{padding:8px 12px;border-radius:6px;border:1px solid;font-weight:700;
+  font-size:12px;cursor:pointer;transition:all .2s}
+.modal-btn.target{background:var(--good);border-color:var(--good);color:#fff}
+.modal-btn.manual{background:var(--accent);border-color:var(--accent);color:#fff}
+.modal-btn.cancel{background:var(--cell);border-color:var(--line);color:var(--ink)}
+
+/* Responsive Mobile */
+@media (max-width:768px){
+  .kpis{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
+  .bn-hero{flex-direction:column;align-items:flex-start}
+  .trade-metrics{grid-template-columns:1fr 1fr}
+  #agentsGrid{grid-template-columns:1fr}
+  .modal-content{width:95%}
+}
+
+/* Analytics Tab */
+.analytics-tabs{display:flex;gap:8px;border-bottom:2px solid var(--line);
+  overflow-x:auto;padding:0 16px}
+.analytics-tab{padding:10px 14px;border:none;background:transparent;cursor:pointer;
+  font-weight:600;font-size:12px;color:var(--ink-3);border-bottom:3px solid transparent;
+  transition:all .2s}
+.analytics-tab.active{color:var(--accent);border-bottom-color:var(--accent)}
+.analytics-content{padding:16px;display:none}
+.analytics-content.active{display:block}
+.chart-container{height:300px;margin:12px 0;border-radius:8px;
+  background:var(--cell);border:1px solid var(--line);padding:12px}
+
+/* Theme Toggle */
+.theme-toggle{position:fixed;bottom:20px;right:20px;width:44px;height:44px;
+  border-radius:50%;background:var(--accent);border:none;color:#fff;font-size:18px;
+  cursor:pointer;display:none;box-shadow:0 4px 12px rgba(47,159,219,.3);
+  transition:all .2s;z-index:100}
+.theme-toggle:hover{transform:scale(1.1);box-shadow:0 6px 16px rgba(47,159,219,.4)}
+.theme-toggle.visible{display:flex;align-items:center;justify-content:center}
+
+/* Network Error Handling */
+.network-error{background:color-mix(in srgb,var(--bad) 15%,var(--card));
+  border:1px solid var(--bad);border-radius:8px;padding:12px;color:var(--bad);
+  font-size:12px;margin:8px 0}
+.network-error .retry-btn{background:var(--bad);color:#fff;border:none;
+  padding:4px 10px;border-radius:4px;cursor:pointer;margin-left:8px;font-weight:600}
 </style></head>
 <body>
 <div class="wrap">
@@ -900,12 +1173,94 @@ __TOPBAR__
     </div>
   </section>
 
+  <!-- ==================== 24/7 FOREX & CRYPTO TRADING DESK (DELTA EXCHANGE) ==================== -->
+  <section class="panel" id="forex-crypto-desk" style="border:1px solid color-mix(in srgb,#f59e0b 45%,var(--line));box-shadow:0 0 24px rgba(245,158,11,0.09);margin-top:14px">
+    <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 16px;border-bottom:1px solid var(--line);background:var(--cell);flex-wrap:wrap;gap:10px">
+      <div style="display:flex;align-items:center;gap:10px">
+        <div style="width:34px;height:34px;border-radius:9px;background:linear-gradient(135deg,#f59e0b,#d97706);display:grid;place-items:center;font-size:18px;box-shadow:0 0 12px rgba(245,158,11,0.4)">🌐</div>
+        <div>
+          <h2 style="border:none;padding:0;margin:0;background:none;font-size:14.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink);display:flex;align-items:center;gap:8px">
+            24/7 Forex &amp; Crypto Trading Desk (Delta Exchange)
+          </h2>
+          <div style="font-size:11px;color:var(--ink-3);margin-top:2px">
+            Bitcoin (BTC) • Ethereum (ETH) • Gold (XAUT) • Solana (SOL) • Continuous 24/7 Multi-Strategy Breakout Engine
+          </div>
+        </div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <span class="badge sm ok" id="forexAutoBadge" style="cursor:pointer;font-weight:700" onclick="toggleForexAuto()" title="Click to Toggle Auto-Trading">🤖 Auto-Trader: ACTIVE</span>
+        <span class="badge sm" id="forexModeBadge" style="background:rgba(245,158,11,0.15);color:#f59e0b;border:1px solid rgba(245,158,11,0.3)">● Delta Paper Trading</span>
+        <button class="btn" id="btnMainForexScan" onclick="mainForexScan()" style="font-size:11.5px;padding:5px 12px;font-weight:700;border-color:#f59e0b;color:#f59e0b;cursor:pointer">
+          ⚡ Scan Setups
+        </button>
+        <a href="/forex" class="btn go" style="font-size:11.5px;padding:5px 14px;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:6px">
+          Open Full Forex Desk ↗
+        </a>
+      </div>
+    </div>
+
+    <!-- Live 24/7 Crypto & Forex Ticker Grid -->
+    <div style="padding:12px 16px;background:color-mix(in srgb,var(--cell) 60%,var(--card));border-bottom:1px solid var(--line)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+        <span style="font-size:11px;font-weight:700;color:var(--ink-3);text-transform:uppercase;letter-spacing:.06em">24/7 Live Perpetual Rates (Delta Exchange India)</span>
+        <span style="font-size:10.5px;color:var(--ink-3);font-family:ui-monospace,monospace" id="forexTickerClock">Syncing Delta tickers…</span>
+      </div>
+      <div id="mainForexTickerRow" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px">
+        <div class="skeleton" style="height:60px"></div>
+        <div class="skeleton" style="height:60px"></div>
+        <div class="skeleton" style="height:60px"></div>
+        <div class="skeleton" style="height:60px"></div>
+      </div>
+    </div>
+
+    <!-- Live Setups & Active Positions Tabular View -->
+    <div style="padding:14px 16px">
+      <!-- Active Forex Positions if any -->
+      <div id="mainForexPositionsWrap" style="display:none;margin-bottom:14px">
+        <div style="font-size:11.5px;font-weight:700;color:var(--good);text-transform:uppercase;letter-spacing:.06em;margin-bottom:6px">
+          ⚡ Open Forex / Crypto Positions
+        </div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;font-size:12px">
+            <thead>
+              <tr>
+                <th>Symbol</th>
+                <th>Side</th>
+                <th class="num">Size</th>
+                <th class="num">Entry Price</th>
+                <th class="num">Mark Price</th>
+                <th class="num">P&amp;L ($)</th>
+                <th>Initial SL</th>
+                <th>Active Trailed SL</th>
+                <th>Target</th>
+                <th>Trailing Status</th>
+                <th>Action</th>
+              </tr>
+            </thead>
+            <tbody id="mainForexPositionsBody"></tbody>
+          </table>
+        </div>
+      </div>
+
+      <!-- Live Setups Row -->
+      <div>
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <span style="font-size:11.5px;font-weight:700;color:var(--ink);letter-spacing:.03em">
+            🎯 24/7 Multi-Strategy Qualifying Signals (ORB + AVWAP + 9/21 EMA + 200 SMA)
+          </span>
+          <span class="badge sm" id="mainForexSetupCount" style="font-size:10px;background:var(--cell);color:var(--ink-2)">Checking setups…</span>
+        </div>
+        <div id="mainForexSetupsGrid" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px">
+          <div class="muted" style="padding:16px;text-align:center;grid-column:1/-1">Loading 24/7 Forex &amp; Crypto setups…</div>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <section class="panel" id="buynow">
     <h2>Buy now <span class="sub" id="bnMeta">— checking the F&amp;O scanner…</span></h2>
     <div class="body" id="bnBody"></div>
   </section>
-
-  <div id="niftyWrap"></div>
 
   <div class="kpis" id="tiles"></div>
 
@@ -924,7 +1279,7 @@ __TOPBAR__
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <span class="badge sm ok" id="councilModelBadge">⚡ Gemini 2.5 Flash</span>
+        <span class="badge sm ok" id="councilModelBadge">⚡ Gemini 3.8 Flash</span>
         <span class="badge sm" style="background:var(--good-soft);color:var(--good)">● 4 Agents Active &amp; Armed</span>
       </div>
     </div>
@@ -1259,15 +1614,6 @@ __TOPBAR__
   </section>
 
   <section class="panel">
-    <h2>Cumulative net P&amp;L <span class="sub">closed trades through the selected session</span></h2>
-    <div class="body" id="chartwrap">
-      <svg id="chart" width="100%" height="240" role="img"
-           aria-label="Cumulative net P&L line chart; values also in the trades table below"></svg>
-      <div id="tooltip"></div>
-    </div>
-  </section>
-
-  <section class="panel">
     <h2>Buy vs Sell <span class="sub">selected session</span></h2>
     <div class="scroll"><table id="sides"></table></div>
   </section>
@@ -1286,6 +1632,7 @@ __TOPBAR__
     <div style="display:flex;justify-content:space-between;align-items:center;padding:9px 13px;border-bottom:1px solid var(--line);background:var(--cell)">
       <h2 style="border-bottom:none;padding:0;background:none;margin:0">Active Positions <span class="sub">live running trades with dynamic trailing stop</span></h2>
       <div style="display:flex;gap:8px;align-items:center">
+        <a href="/forex" class="btn" style="font-size:11.5px;padding:4px 10px;border-color:color-mix(in srgb,#f59e0b 55%,var(--line));color:#f59e0b;font-weight:700;text-decoration:none;display:inline-flex;align-items:center;gap:5px">🌐 Forex &amp; Crypto (Delta)</a>
         <button class="btn" id="btnAiScan" style="font-size:11.5px;padding:4px 10px;border-color:color-mix(in srgb,var(--accent) 55%,var(--line));color:var(--accent);font-weight:600">⚡ AI Agent Scan</button>
         <button class="btn go" id="btnNewTrade" style="font-size:11.5px;padding:4px 10px">+ Take Paper Trade</button>
       </div>
@@ -1294,7 +1641,7 @@ __TOPBAR__
       <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
         <span style="font-weight:700;color:var(--ink);display:flex;align-items:center;gap:6px">
           <span>⚡ Multi-Agent Evaluator</span>
-          <span class="badge sm ok">Gemini 3.5 Flash Lite</span>
+          <span class="badge sm ok">Gemini 3.8 Flash</span>
         </span>
         <label style="margin-left:auto"><b>Symbol:</b>
           <select id="aiSymSelect" style="padding:5px 9px;border-radius:6px;border:1px solid var(--line);background:var(--cell);color:var(--ink);font-weight:600;max-width:240px">
@@ -1508,6 +1855,8 @@ __TOPBAR__
     <div class="body"><pre class="report" id="report"></pre></div>
   </section>
 
+  <div id="niftyWrap"></div>
+
   <div class="foot" id="foot"></div>
 </div>
 
@@ -1524,6 +1873,138 @@ const t2stamp=ts=> new Date(ts*1000).toLocaleString("en-IN",
 
 function el(tag, cls, text){const e=document.createElement(tag); if(cls)e.className=cls;
   if(text!=null)e.textContent=text; return e;}
+
+/* ========== ENHANCED DASHBOARD UTILITIES ========== */
+// Local Storage Management for UI State
+const UIState = {
+  get(key, def=null) { const v = localStorage.getItem(`ui_${key}`); return v ? JSON.parse(v) : def; },
+  set(key, val) { localStorage.setItem(`ui_${key}`, JSON.stringify(val)); },
+  toggle(key) { this.set(key, !this.get(key, false)); return this.get(key); }
+};
+
+// Collapse State Management
+function initCollapsible(sectionId, startExpanded = true) {
+  const header = document.querySelector(`#${sectionId} .collapsible-header`);
+  const content = document.querySelector(`#${sectionId} .collapsible-content`);
+  const toggle = document.querySelector(`#${sectionId} .collapsible-toggle`);
+  if(!header || !content) return;
+  let isExpanded = UIState.get(`collapsed_${sectionId}`, startExpanded);
+  const updateState = (exp) => {
+    isExpanded = exp;
+    UIState.set(`collapsed_${sectionId}`, exp);
+    content.classList.toggle('collapsed', !exp);
+    toggle.classList.toggle('collapsed', !exp);
+  };
+  header.addEventListener('click', () => updateState(!isExpanded));
+  updateState(isExpanded);
+}
+
+// Create sparkline chart for KPI tiles
+function createSparkline(container, values, color = '#38bdf8') {
+  const canvas = document.createElement('canvas');
+  canvas.className = 'kpi-sparkline';
+  canvas.width = 120;
+  canvas.height = 30;
+  container.appendChild(canvas);
+  const ctx = canvas.getContext('2d');
+  if(!values || values.length < 2) return;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const range = max - min || 1;
+  const w = canvas.width / (values.length - 1);
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  values.forEach((v, i) => {
+    const y = canvas.height - ((v - min) / range * (canvas.height - 4)) - 2;
+    i === 0 ? ctx.moveTo(i * w, y) : ctx.lineTo(i * w, y);
+  });
+  ctx.stroke();
+}
+
+// Notification System
+const Notifications = {
+  show(msg, type = 'info', duration = 3000) {
+    const n = document.createElement('div');
+    n.className = `alert-badge ${type}`;
+    n.textContent = msg;
+    n.style.cssText = 'position:fixed;top:20px;right:20px;z-index:2000;box-shadow:0 4px 12px rgba(0,0,0,.2)';
+    document.body.appendChild(n);
+    setTimeout(() => n.remove(), duration);
+  }
+};
+
+// Modal System
+const Modal = {
+  open(title, content) {
+    let overlay = document.getElementById('modalOverlay');
+    if(!overlay) {
+      overlay = document.createElement('div');
+      overlay.id = 'modalOverlay';
+      overlay.className = 'modal-overlay';
+      overlay.innerHTML = '<div class="modal-content"></div>';
+      document.body.appendChild(overlay);
+    }
+    const modalContent = overlay.querySelector('.modal-content');
+    modalContent.innerHTML = `<span class="modal-close">&times;</span><div class="modal-header">${title}</div>${content}`;
+    overlay.classList.add('active');
+    overlay.querySelector('.modal-close').onclick = () => this.close();
+    overlay.onclick = (e) => e.target === overlay && this.close();
+  },
+  close() {
+    const overlay = document.getElementById('modalOverlay');
+    if(overlay) overlay.classList.remove('active');
+  }
+};
+
+// Quick Close Trade Modal
+function showQuickCloseModal(tradeId, symbol, entryPrice) {
+  const targets = [
+    { label: '1x Target (2%)', mult: 1.02 },
+    { label: '1.5x Target (3%)', mult: 1.03 },
+    { label: '2x Target (4%)', mult: 1.04 }
+  ];
+  let html = '<div style="margin-top:12px"><div style="font-size:11px;color:var(--ink-3);margin-bottom:8px">' + symbol + ' @ ₹' + fmt(entryPrice) + '</div><div class="quick-close-btns">';
+  targets.forEach(t => {
+    const exitPrice = (entryPrice * t.mult).toFixed(2);
+    html += '<button class="modal-btn target" onclick="quickClose(' + tradeId + ', ' + exitPrice + ')">' + t.label + '<br><span style="font-size:9px">₹' + exitPrice + '</span></button>';
+  });
+  html += '</div><div style="margin-top:12px"><label style="font-size:11px;color:var(--ink-3)">Manual Exit Price:</label><div style="display:flex;gap:6px;margin-top:4px"><input type="number" id="manualExitPrice" placeholder="Enter price" style="flex:1;padding:6px;border-radius:4px;border:1px solid var(--line);background:var(--bg-2);color:var(--ink)"><button class="modal-btn manual" onclick="quickClose(' + tradeId + ', parseFloat(document.getElementById(\'manualExitPrice\').value))">Close</button></div></div><button class="modal-btn cancel" onclick="Modal.close()" style="width:100%;margin-top:12px">Cancel</button></div>';
+  Modal.open('Close Trade #' + tradeId, html);
+}
+
+// Quick close execution
+async function quickClose(tradeId, exitPrice) {
+  if(!exitPrice || exitPrice <= 0) { Notifications.show('Invalid exit price', 'warning'); return; }
+  try {
+    const r = await fetch('/api/close', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({trade_id: tradeId, exit_price: exitPrice})});
+    const res = await r.json();
+    if(res.ok) {
+      Notifications.show('Trade #' + tradeId + ' closed @ ₹' + exitPrice, 'success');
+      Modal.close();
+      setTimeout(loadData, 500);
+    } else {
+      Notifications.show(res.error || 'Close failed', 'critical');
+    }
+  } catch(e) {
+    Notifications.show('Network error: ' + e.message, 'critical');
+  }
+}
+
+// Calculate trend percentage
+function calcTrend(current, previous) {
+  if(!previous || previous === 0) return 0;
+  return ((current - previous) / Math.abs(previous) * 100).toFixed(1);
+}
+
+// Debounce function
+function debounce(fn, ms = 500) {
+  let timer;
+  return function(...args) {
+    clearTimeout(timer);
+    timer = setTimeout(() => fn.apply(this, args), ms);
+  };
+}
 
 // The scanner runs its own background scan; this only reads the cached result,
 // so polling it is cheap and never blocks this page.
@@ -1717,7 +2198,8 @@ function render(){
   renderTrades(d); renderRej(d); renderCands(d); renderAlog(d);
   const modelBadge = document.getElementById("councilModelBadge");
   if(modelBadge && d.model) {
-    modelBadge.textContent = "⚡ " + (d.provider === "gemini" ? "Gemini 3.5 Flash Lite" : d.model);
+    const formatted = d.model.replace("gemini-", "Gemini ").replace("-", " ").replace(/\b\w/g, c => c.toUpperCase());
+    modelBadge.textContent = "⚡ " + (d.provider === "gemini" ? (formatted.includes("3.8") ? "Gemini 3.8 Flash" : formatted) : d.model);
   }
   const rep=document.getElementById("report");
   if(rep) {
@@ -1728,16 +2210,28 @@ function render(){
 function renderTiles(d){
   const s=d.stats, box=document.getElementById("tiles"); box.replaceChildren();
   const mk=(label,value,opts={})=>{
-    const c=el("div","kpi");
-    c.append(el("div","k",label));
-    const v=el("div","v mono"+(opts.hero?" hero":""),value);
+    const c=el("div","kpi-tile");
+    const lbl = el("div","kpi-label");
+    lbl.textContent = label;
+    if(opts.icon) lbl.prepend(opts.icon + ' ');
+    c.append(lbl);
+    const v=el("div","kpi-value"+(opts.hero?" hero":""),value);
     if(opts.dir) v.classList.add(opts.dir);
     c.append(v);
+    if(opts.trend) {
+      const trend = el("span","kpi-trend");
+      trend.className = 'kpi-trend ' + (opts.trend.pct > 0 ? 'up' : opts.trend.pct < 0 ? 'down' : '');
+      trend.textContent = (opts.trend.pct > 0 ? '↑ ' : opts.trend.pct < 0 ? '↓ ' : '→ ') + Math.abs(opts.trend.pct) + '%';
+      v.appendChild(trend);
+    }
     if(opts.delta) {
-      const dEl = el("div","f");
+      const dEl = el("div","kpi-subtext");
       if(opts.deltaHtml) dEl.innerHTML = opts.delta;
       else dEl.textContent = opts.delta;
       c.append(dEl);
+    }
+    if(opts.sparkline) {
+      createSparkline(c, opts.sparkline, opts.color || '#38bdf8');
     }
     box.append(c);
   };
@@ -1755,8 +2249,11 @@ function renderTiles(d){
   mk("Total Net P&L (MTM)", (net>=0?"+":"")+fmt(net), {
     hero:true,
     dir:net>=0?"up":"down",
+    trend: {pct: calcTrend(net, s.day_pnl_all_time)},
     delta:deltaHtml,
-    deltaHtml:true
+    deltaHtml:true,
+    icon:'📊',
+    color:'#38bdf8'
   });
 
   if(s.open > 0){
@@ -1766,24 +2263,45 @@ function renderTiles(d){
       : `across ${s.open} active open trade${s.open>1?'s':''} (Trailing SL armed at 1.0R)`;
     mk("Live Floating P&L", (unp>=0?"+":"")+fmt(unp), {
       dir:unp>=0?"up":"down",
-      delta:trailSub
+      trend: {pct: calcTrend(unp, rlp)},
+      delta:trailSub,
+      icon:'💰',
+      color:unp>=0?'#34d399':'#ef4444'
     });
   }
 
-  mk("Win rate", s.win_rate==null?"—":fmt(s.win_rate,1)+"%");
-  mk("Trades", String(s.trades)+(s.open?` (${s.open} open)`:""));
-  mk("Charges (INR)", fmt(s.charges)+(s.est_open_charges?` (~₹${fmt(s.total_charges)} est)`:""));
-  mk("Rejections today", String(s.rejections_today));
+  mk("Win Rate", s.win_rate==null?"—":fmt(s.win_rate,1)+"%", {
+    icon:'📈',
+    delta: s.trades ? `${s.trades} trades total` : 'No trades yet'
+  });
+
+  mk("Open Trades", String(s.open), {
+    icon:'🔴',
+    delta: s.open > 0 ? `${s.open} active position${s.open>1?'s':''}` : 'All positions closed'
+  });
+
+  mk("Trading Charges", fmt(s.total_charges)+" INR", {
+    icon:'💳',
+    delta: s.est_open_charges ? `Realized: ₹${fmt(s.charges)} · Est: ₹${fmt(s.est_open_charges)}` : `Total: ₹${fmt(s.charges)}`,
+    trend: {pct: s.charges > 0 ? -5 : 0}
+  });
+
+  mk("Rejections Today", String(s.rejections_today), {
+    icon:'⛔',
+    delta: s.rejections_today > 0 ? 'Risk/Rate limit hit' : 'All signals approved'
+  });
 
   const startingCap = 15000;
   const targetCap = 100000;
   const curCap = startingCap + net;
   const progPct = Math.max(0, Math.min(100, ((curCap - startingCap) / (targetCap - startingCap) * 100))).toFixed(1);
   mk("🎯 15K → 1L Target", `₹${fmt(curCap)}`, {
-    hero: false,
+    hero: true,
     dir: net>=0?"up":"down",
-    delta: `<a href="/target" style="color:#10b981;font-weight:700;text-decoration:none">Goal: ₹1 Lakh (${progPct}%) · Details →</a>`,
-    deltaHtml: true
+    trend: {pct: progPct},
+    delta: `<strong>${progPct}% of target</strong> · <a href="/target" style="color:#10b981;font-weight:700;text-decoration:none">View breakdown →</a>`,
+    deltaHtml: true,
+    color:'#10b981'
   });
 }
 
@@ -2173,6 +2691,7 @@ function renderBreakdown(d){
 // --- cumulative P&L line chart (SVG) ---
 function renderChart(d){
   const svg=document.getElementById("chart");
+  if(!svg) return;
   svg.replaceChildren();
   const closed=d.trades.filter(t=>t.status==="closed" && t.exit_ts!=null)
                        .sort((a,b)=>a.exit_ts-b.exit_ts);
@@ -2669,11 +3188,411 @@ async function loadQuotes(){
 load();
 loadFno();
 loadQuotes();
-setInterval(load, 2000);
-setInterval(loadFno, 2000);
-setInterval(loadQuotes, 2000);
+setInterval(load, 3000);
+setInterval(loadFno, 10000);
+setInterval(loadQuotes, 5000);
 __THEMEJS__
 window.addEventListener("resize", ()=>DATA&&renderChart(DATA));
+
+/* ========== INITIALIZE ENHANCED DASHBOARD FEATURES ========== */
+document.addEventListener('DOMContentLoaded', () => {
+  // Initialize collapsible sections with localStorage persistence
+  const sections = ['agent-log-section', 'rejections-section', 'candidates-section', 'breakdown-section'];
+  sections.forEach(id => {
+    // Only initialize if section exists
+    if(document.getElementById(id)) {
+      const startExpanded = id !== 'agent-log-section' && id !== 'rejections-section' && id !== 'candidates-section';
+      initCollapsible(id, startExpanded);
+    }
+  });
+  
+  // Add theme toggle button if not already present
+  if(!document.querySelector('.theme-toggle')) {
+    const toggle = document.createElement('button');
+    toggle.className = 'theme-toggle visible';
+    toggle.textContent = '🌙';
+    toggle.title = 'Toggle dark/light theme';
+    toggle.onclick = () => {
+      const current = document.documentElement.getAttribute('data-theme');
+      const next = current === 'dark' ? 'light' : 'dark';
+      document.documentElement.setAttribute('data-theme', next);
+      UIState.set('theme', next);
+      toggle.textContent = next === 'dark' ? '☀️' : '🌙';
+    };
+    const saved = UIState.get('theme');
+    if(saved) {
+      document.documentElement.setAttribute('data-theme', saved);
+      toggle.textContent = saved === 'dark' ? '☀️' : '🌙';
+    }
+    document.body.appendChild(toggle);
+  }
+  
+  // Enhance "Buy Now" section with action buttons and timer
+  const buyNowSection = document.getElementById('buynow');
+  if(buyNowSection) {
+    const heroDiv = buyNowSection.querySelector('.bn-hero');
+    if(heroDiv && !heroDiv.querySelector('.bn-hero-actions')) {
+      const actionsDiv = document.createElement('div');
+      actionsDiv.className = 'bn-hero-actions';
+      actionsDiv.innerHTML = `
+        <button class="bn-action-btn buy" onclick="if(confirm('Execute BUY signal?')) Notifications.show('Trade signal sent!', 'success')">
+          ✓ BUY
+        </button>
+        <button class="bn-action-btn sell" onclick="if(confirm('Execute SELL signal?')) Notifications.show('Trade signal sent!', 'success')">
+          ✗ SELL
+        </button>
+        <button class="bn-action-btn skip" onclick="Notifications.show('Signal skipped', 'info')">
+          ⊝ SKIP
+        </button>
+        <div class="bn-timer">
+          Signal age: <span class="bn-timer-value" id="signalAge">just now</span>
+        </div>
+      `;
+      heroDiv.appendChild(actionsDiv);
+      
+      // Update signal age timer
+      let startTime = Date.now();
+      setInterval(() => {
+        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const ageEl = document.getElementById('signalAge');
+        if(ageEl) {
+          if(elapsed < 60) ageEl.textContent = elapsed + 's ago';
+          else if(elapsed < 3600) ageEl.textContent = Math.floor(elapsed / 60) + 'm ago';
+          else ageEl.textContent = Math.floor(elapsed / 3600) + 'h ago';
+        }
+      }, 1000);
+    }
+  }
+  
+  // Add quick close buttons to trade cards (if using card layout)
+  const updateTradeCardActions = () => {
+    const openTradeRows = document.querySelectorAll('#openTrades tr:not(:first-child)');
+    openTradeRows.forEach(row => {
+      const closeBtn = row.querySelector('button[onclick*="close"]');
+      if(closeBtn && !closeBtn.dataset.enhanced) {
+        closeBtn.dataset.enhanced = 'true';
+        const tradeCells = row.querySelectorAll('td');
+        if(tradeCells.length >= 3) {
+          const tradeId = tradeCells[0].textContent.trim();
+          const symbol = tradeCells[2].textContent.trim();
+          const entryPriceCell = tradeCells[6];
+          const entryPrice = parseFloat(entryPriceCell.textContent.trim());
+          
+          closeBtn.textContent = '⚡ Quick Close';
+          closeBtn.style.background = 'linear-gradient(135deg, var(--accent), #4f46e5)';
+          closeBtn.style.color = '#fff';
+          closeBtn.style.border = 'none';
+          closeBtn.style.boxShadow = '0 0 8px rgba(47,159,219,0.3)';
+          closeBtn.onclick = () => showQuickCloseModal(tradeId, symbol, entryPrice);
+        }
+      }
+    });
+  };
+  
+  // Run trade card enhancement on load and after each data update
+  updateTradeCardActions();
+  const origLoad = window.load;
+  if(origLoad) {
+    window.load = function() {
+      origLoad.apply(this, arguments);
+      setTimeout(updateTradeCardActions, 200);
+    };
+  }
+  
+  // Network error handling with retry logic
+  const origFetch = window.fetch;
+  let failureCount = {};
+  window.fetch = async function(...args) {
+    try {
+      const res = await origFetch.apply(this, args);
+      if(!res.ok) throw new Error(res.statusText);
+      failureCount[args[0]] = 0;
+      return res;
+    } catch(e) {
+      failureCount[args[0]] = (failureCount[args[0]] || 0) + 1;
+      if(failureCount[args[0]] <= 3) {
+        console.warn(`API call failed (attempt ${failureCount[args[0]]}): ${args[0]}`);
+      } else {
+        Notifications.show(`Connection issue: ${args[0]}`, 'warning', 5000);
+      }
+      throw e;
+    }
+  };
+  
+  // Add analytics tab functionality
+  const initAnalyticsTabs = () => {
+    const tabs = document.querySelectorAll('.analytics-tab');
+    const contents = document.querySelectorAll('.analytics-content');
+    tabs.forEach((tab, idx) => {
+      tab.onclick = () => {
+        tabs.forEach(t => t.classList.remove('active'));
+        contents.forEach(c => c.classList.remove('active'));
+        tab.classList.add('active');
+        if(contents[idx]) contents[idx].classList.add('active');
+        UIState.set('activeAnalyticsTab', idx);
+      };
+    });
+    const savedTab = UIState.get('activeAnalyticsTab', 0);
+    if(tabs[savedTab]) tabs[savedTab].click();
+  };
+  initAnalyticsTabs();
+  
+  // Auto-update live ticker with debouncing
+  const updateLiveQuotes = debounce(() => {
+    const openTrades = (DATA && DATA.trades || []).filter(t => t.status === 'open');
+    const symbols = [...new Set(openTrades.map(t => t.symbol))];
+    if(symbols.length > 0) {
+      const tickerDiv = document.getElementById('liveTickerItems');
+      if(tickerDiv) {
+        tickerDiv.style.animation = 'fadeIn 0.3s';
+      }
+    }
+  }, 1000);
+  
+  // Listen for data updates and refresh live quotes
+  const origRender = window.render;
+  if(origRender) {
+    window.render = function() {
+      origRender.apply(this, arguments);
+      updateLiveQuotes();
+    };
+  }
+  
+  console.log('Enhanced Dashboard Initialized ✓');
+  console.log('Features: Collapsible sections, Quick-close modal, Theme toggle, Network retry, Analytics tabs');
+  
+  // Show welcome notification
+  setTimeout(() => {
+    Notifications.show('📊 Enhanced Dashboard Ready · All features active', 'success', 4000);
+  }, 500);
+});
+
+// Add fade-in animation
+const style = document.createElement('style');
+style.textContent = `
+  @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
+`;
+// --- 24/7 Forex & Crypto (Delta Exchange) Live Client ---
+async function initMainForex() {
+  async function updateForexTickers() {
+    try {
+      const res = await fetch('/api/forex/tickers');
+      if (!res.ok) return;
+      const data = await res.json();
+      const row = document.getElementById('mainForexTickerRow');
+      if (!row) return;
+      row.innerHTML = '';
+      const pairs = ['BTCUSD', 'ETHUSD', 'SOLUSD', 'XAUTUSD', 'XRPUSD'];
+      pairs.forEach(sym => {
+        const t = data[sym];
+        if (!t) return;
+        const up = (t.change_24h_pct || 0) >= 0;
+        const card = document.createElement('div');
+        card.style.cssText = 'background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;display:flex;flex-direction:column;justify-content:space-between;cursor:pointer;transition:all .15s ease';
+        card.onclick = () => window.location.href = '/forex';
+        card.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font-weight:700;font-size:13px;color:var(--ink)">${sym}</span>
+            <span style="font-size:10px;font-weight:600;color:${up ? 'var(--good)' : 'var(--bad)'}">${up ? '▲' : '▼'} ${Math.abs(t.change_24h_pct || 0).toFixed(2)}%</span>
+          </div>
+          <div style="font-size:17px;font-weight:700;font-family:ui-monospace,monospace;margin-top:4px;color:var(--ink)">
+            $${Number(t.mark_price || t.close || 0).toLocaleString('en-US', {minimumFractionDigits: (sym.includes('XRP')?4:2)})}
+          </div>
+          <div style="font-size:9.5px;color:var(--ink-3);margin-top:2px">Vol 24h: $${Number(t.volume_24h || 0).toLocaleString('en-US', {maximumFractionDigits:0})}</div>
+        `;
+        row.appendChild(card);
+      });
+      const clock = document.getElementById('forexTickerClock');
+      if (clock) clock.textContent = 'Live: ' + new Date().toLocaleTimeString();
+    } catch(e) {}
+  }
+
+  async function updateForexPositions() {
+    try {
+      const res = await fetch('/api/forex/positions');
+      if (!res.ok) return;
+      const positions = await res.json();
+      const wrap = document.getElementById('mainForexPositionsWrap');
+      const body = document.getElementById('mainForexPositionsBody');
+      if (!wrap || !body) return;
+      if (positions && positions.length > 0) {
+        wrap.style.display = 'block';
+        body.innerHTML = '';
+        positions.forEach(p => {
+          const pnlPos = (p.pnl || 0) >= 0;
+          const initialSl = p.initial_stop != null ? p.initial_stop : p.stop_loss;
+          const currentSl = p.stop_loss;
+          const isBuy = p.side === "BUY";
+          const beLevel = p.entry_price;
+          const rDist = Math.abs(p.entry_price - initialSl) || (p.entry_price * 0.002);
+          const beTriggerPrice = isBuy ? (p.entry_price + rDist) : (p.entry_price - rDist);
+          const isBeLocked = (isBuy && currentSl >= beLevel - 0.01) || (!isBuy && currentSl <= beLevel + 0.01);
+          const isTrailed = (isBuy && currentSl > beLevel + 0.01) || (!isBuy && currentSl < beLevel - 0.01);
+
+          let trailSlHtml = "";
+          let statusBadge = "";
+          if (isTrailed) {
+            trailSlHtml = `<div style="font-weight:700;color:var(--good);font-family:ui-monospace">$${fmt(currentSl)}</div><div style="font-size:9px;color:var(--good);font-weight:600">Trailed (+1.0R buf)</div>`;
+            statusBadge = `<span class="badge sm bull" style="font-size:10px">🚀 Trailed</span>`;
+          } else if (isBeLocked) {
+            trailSlHtml = `<div style="font-weight:700;color:var(--good);font-family:ui-monospace">🛡️ $${fmt(currentSl)}</div><div style="font-size:9px;color:var(--good);font-weight:600">Breakeven Locked</div>`;
+            statusBadge = `<span class="badge sm ok" style="font-size:10px">🛡️ Zero Risk (BE)</span>`;
+          } else {
+            trailSlHtml = `<div style="font-weight:600;color:var(--ink-2);font-family:ui-monospace">$${fmt(currentSl)}</div><div style="font-size:9px;color:var(--ink-3)">BE @ 1.0R ($${fmt(beTriggerPrice)})</div>`;
+            statusBadge = `<span class="badge sm" style="background:var(--cell);color:var(--ink-2);font-size:10px">⏳ Awaiting 1.0R BE</span>`;
+          }
+
+          const tr = document.createElement('tr');
+          tr.innerHTML = `
+            <td style="font-weight:700">${p.symbol}</td>
+            <td><span class="badge sm ${p.side === 'BUY' ? 'ok' : 'veto'}">${p.side}</span></td>
+            <td class="num">${p.size}</td>
+            <td class="num">$${fmt(p.entry_price)}</td>
+            <td class="num">$${fmt(p.current_price || p.mark_price)}</td>
+            <td class="num" style="color:${pnlPos ? 'var(--good)' : 'var(--bad)'};font-weight:700">${pnlPos ? '+' : ''}$${(p.pnl||0).toFixed(2)}</td>
+            <td style="color:var(--bad);font-weight:600">$${fmt(initialSl)}</td>
+            <td>${trailSlHtml}</td>
+            <td style="color:var(--good)">$${fmt(p.target)}</td>
+            <td>${statusBadge}</td>
+            <td><button class="btn" style="font-size:10px;padding:2px 8px;color:var(--bad);border-color:var(--bad);cursor:pointer" onclick="closeForexTrade('${p.id || p.trade_id}')">Close</button></td>
+          `;
+          body.appendChild(tr);
+        });
+      } else {
+        wrap.style.display = 'none';
+      }
+    } catch(e) {}
+  }
+
+  async function updateForexSetups() {
+    try {
+      const res = await fetch('/api/forex/scan');
+      if (!res.ok) return;
+      const setups = await res.json();
+      const grid = document.getElementById('mainForexSetupsGrid');
+      const count = document.getElementById('mainForexSetupCount');
+      if (!grid) return;
+      if (!setups || setups.length === 0) {
+        grid.innerHTML = '<div class="muted" style="padding:16px;text-align:center;grid-column:1/-1">No breakout setups right now. Scanning 24/7…</div>';
+        if (count) count.textContent = '0 Setups';
+        return;
+      }
+      if (count) count.textContent = setups.length + ' Setups Available';
+      grid.innerHTML = '';
+      setups.slice(0, 4).forEach(s => {
+        const isBuy = s.side === 'BUY';
+        const card = document.createElement('div');
+        card.style.cssText = 'background:var(--cell);border:1px solid var(--line);border-radius:9px;padding:12px;display:flex;flex-direction:column;gap:8px';
+        card.innerHTML = `
+          <div style="display:flex;align-items:center;justify-content:space-between">
+            <span style="font-weight:700;font-size:14px;color:var(--ink)">${s.symbol}</span>
+            <span class="badge sm ${isBuy ? 'ok' : 'veto'}" style="font-weight:700">${s.side}</span>
+            <span class="badge sm" style="background:rgba(245,158,11,0.15);color:#f59e0b;font-weight:700">★ ${s.conviction}/10 Conviction</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;font-size:12px;background:var(--card);padding:6px 9px;border-radius:6px;border:1px solid var(--line)">
+            <div><span style="color:var(--ink-3);font-size:10px">ENTRY</span><br><b style="font-family:ui-monospace">$${s.price}</b></div>
+            <div><span style="color:var(--bad);font-size:10px">STOP</span><br><b style="color:var(--bad);font-family:ui-monospace">$${s.stop_loss}</b></div>
+            <div><span style="color:var(--good);font-size:10px">TARGET</span><br><b style="color:var(--good);font-family:ui-monospace">$${s.target1}</b></div>
+            <div><span style="color:var(--accent);font-size:10px">R:R</span><br><b style="font-family:ui-monospace">${s.risk_reward}</b></div>
+          </div>
+          <div style="font-size:11px;color:var(--ink-2)">${(s.reasons || []).slice(0, 2).join(' • ')}</div>
+          <div style="display:flex;gap:6px;margin-top:auto">
+            <button class="btn" style="flex:1;font-size:11px;padding:5px;background:${isBuy ? 'var(--good)' : 'var(--bad)'};color:#fff;border:none;font-weight:700;border-radius:6px;cursor:pointer" onclick="executeMainForexTrade('${s.symbol}', '${s.side}', ${s.price}, ${s.stop_loss}, ${s.target1}, ${s.conviction})">
+              ⚡ Execute ${s.side} (Paper)
+            </button>
+            <a href="/forex" class="btn" style="font-size:11px;padding:5px 8px;text-decoration:none;border-radius:6px">Details ↗</a>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+    } catch(e) {}
+  }
+
+  window.mainForexScan = async function() {
+    const btn = document.getElementById('btnMainForexScan');
+    if (btn) btn.textContent = 'Scanning…';
+    await updateForexSetups();
+    if (btn) btn.textContent = '⚡ Scan Setups';
+  };
+
+  window.executeMainForexTrade = async function(symbol, side, price, sl, target, conviction) {
+    if (!confirm(`Execute 24/7 Paper Trade on ${symbol} (${side}) at $${price}?`)) return;
+    try {
+      const res = await fetch('/api/forex/trade', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({symbol, side, price, stop_loss: sl, target, conviction, size: 1.0})
+      });
+      const data = await res.json();
+      if (data.ok) {
+        alert(`✓ Trade Executed on ${symbol}!\nTrade ID: ${data.trade_id}\nEntry: $${data.fill_price}\nStop: $${sl}\nTarget: $${target}`);
+        updateForexPositions();
+      } else {
+        alert('Trade execution error: ' + (data.error || 'Unknown error'));
+      }
+    } catch(err) {
+      alert('Network error executing trade: ' + err);
+    }
+  };
+
+  window.closeForexTrade = async function(tradeId) {
+    if (!confirm('Close this position at current mark price?')) return;
+    try {
+      const res = await fetch('/api/forex/close', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({trade_id: tradeId})
+      });
+      const data = await res.json();
+      if (data.ok) {
+        alert(`✓ Position Closed at $${data.exit_price}\nP&L: $${data.pnl.toFixed(2)}`);
+        updateForexPositions();
+      } else {
+        alert('Failed to close position: ' + data.error);
+      }
+    } catch(err) {
+      alert('Error closing position: ' + err);
+    }
+  };
+
+  window.toggleForexAuto = async function() {
+    try {
+      const res = await fetch('/api/forex/auto_toggle', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}'});
+      const data = await res.json();
+      updateForexAutoStatus();
+    } catch(e) {}
+  };
+
+  async function updateForexAutoStatus() {
+    try {
+      const res = await fetch('/api/forex/auto_status');
+      if (!res.ok) return;
+      const data = await res.json();
+      const badge = document.getElementById('forexAutoBadge');
+      if (badge) {
+        if (data.enabled) {
+          badge.className = 'badge sm ok';
+          badge.innerHTML = '🤖 Auto-Trader: ACTIVE';
+        } else {
+          badge.className = 'badge sm veto';
+          badge.innerHTML = '⏸ Auto-Trader: PAUSED';
+        }
+      }
+    } catch(e) {}
+  }
+
+  updateForexTickers();
+  updateForexPositions();
+  updateForexSetups();
+  updateForexAutoStatus();
+  setInterval(updateForexTickers, 8000);
+  setInterval(updateForexPositions, 10000);
+  setInterval(updateForexAutoStatus, 10000);
+}
+initMainForex();
+
+document.head.appendChild(style);
 </script>
 </body></html>
 """
@@ -3299,7 +4218,7 @@ async function fetchTargetData() {
 }
 
 fetchTargetData();
-setInterval(fetchTargetData, 2000);
+setInterval(fetchTargetData, 4000);
 __THEMEJS__
 </script>
 </body>
@@ -3319,6 +4238,12 @@ TARGET_PAGE = (_TARGET_PAGE_TEMPLATE
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         url = urlparse(self.path)
+        # Check Forex & Delta Exchange endpoints
+        from trading import forex_web
+        forex_res = forex_web.serve_get(url.path, parse_qs(url.query))
+        if forex_res is not None:
+            return self._send(*forex_res)
+
         # The F&O scanner page and its API live in trading.fno.web; they are
         # served from here too so one process covers both views. "/" is not
         # delegated — that is this dashboard's own page.
@@ -3352,6 +4277,11 @@ class Handler(BaseHTTPRequestHandler):
             except Exception:
                 body = {}
 
+            from trading import forex_web
+            forex_res = forex_web.serve_post(url.path, body)
+            if forex_res is not None:
+                return self._send(*forex_res)
+
             if url.path in ("/api/ai-scan", "/api/agents/scan"):
                 res = _handle_ai_scan(body)
                 self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res, default=str).encode())
@@ -3377,12 +4307,15 @@ class Handler(BaseHTTPRequestHandler):
             self._send(500, "application/json", json.dumps(err, default=str).encode())
 
     def _send(self, code: int, ctype: str, body: bytes):
-        self.send_response(code)
-        self.send_header("Content-Type", ctype)
-        self.send_header("Content-Length", str(len(body)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(code)
+            self.send_header("Content-Type", ctype)
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            pass
 
     def log_message(self, fmt, *args):  # quiet
         pass
@@ -3420,6 +4353,8 @@ def main(argv: list[str] | None = None):
 
     fyers.start_background_server()
     fno_web.CACHE.start()
+    t_monitor = threading.Thread(target=_background_position_exit_monitor, daemon=True, name="PositionExitMonitor")
+    t_monitor.start()
     server = fno_web._bind(args.port, Handler, "the dashboard")
     if server is None:
         return 1

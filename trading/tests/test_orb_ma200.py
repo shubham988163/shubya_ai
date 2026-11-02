@@ -54,8 +54,8 @@ def test_orb_ma200_signal_generation():
     breakout_idx = day_indices[3]
     df.iloc[breakout_idx, df.columns.get_loc("Open")] = 200.5
     df.iloc[breakout_idx, df.columns.get_loc("High")] = 203.0
-    df.iloc[breakout_idx, df.columns.get_loc("Low")] = 198.0
-    df.iloc[breakout_idx, df.columns.get_loc("Close")] = 202.0  # Fresh close > 201.0
+    df.iloc[breakout_idx, df.columns.get_loc("Low")] = 200.0
+    df.iloc[breakout_idx, df.columns.get_loc("Close")] = 202.5  # Fresh close > 201.0, quality body
     df.iloc[breakout_idx, df.columns.get_loc("Volume")] = 5000.0  # > 1.5x avg 1000.0
 
     # Slice df up to breakout_idx
@@ -67,10 +67,10 @@ def test_orb_ma200_signal_generation():
     assert sig is not None
     assert sig.symbol == "TESTSYM"
     assert sig.side == "BUY"
-    assert sig.price == 202.0
+    assert sig.price == 202.5
     assert sig.strategy_id == "orb_ma200"
-    assert sig.stop_loss < 202.0
-    assert sig.target > 202.0
+    assert sig.stop_loss < 202.5
+    assert sig.target > 202.5
 
     # Test Engine integration with orb_ma200 using isolated test ledger
     import tempfile

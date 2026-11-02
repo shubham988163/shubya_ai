@@ -12,6 +12,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -39,6 +40,58 @@ INDEX_SYMBOLS = {
     "^NSEI": "NSE:NIFTY50-INDEX",
     "^NSEBANK": "NSE:NIFTYBANK-INDEX",
 }
+
+_QUOTES_CACHE: dict[str, tuple[float, list[dict]]] = {}
+_QUOTES_CACHE_TTL = 1.5  # seconds (ultra-fast for trailing stops, well within Fyers 10 req/sec limit)
+
+
+def _quotes_from_yfinance(symbols: list[str]) -> list[dict]:
+    """Fallback quote fetcher using yfinance for resilient live dashboard ticker."""
+    import yfinance as yf
+    sym_map = {}
+    yf_tickers = []
+    for s in symbols:
+        clean = s.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+        if clean in ("NIFTY50", "NIFTY", "^NSEI"):
+            yt = "^NSEI"
+        elif clean in ("NIFTYBANK", "BANKNIFTY", "^NSEBANK"):
+            yt = "^NSEBANK"
+        else:
+            yt = f"{clean}.NS"
+        sym_map[yt] = s
+        yf_tickers.append(yt)
+    out = []
+    try:
+        t_str = " ".join(set(yf_tickers))
+        df = yf.download(t_str, period="2d", interval="1d", group_by="ticker", progress=False)
+        for yt, orig_sym in sym_map.items():
+            try:
+                sub = df[yt] if (len(set(yf_tickers)) > 1 and yt in df.columns.levels[0]) else df
+                if sub is not None and not sub.empty:
+                    c = float(sub["Close"].iloc[-1])
+                    prev = float(sub["Close"].iloc[-2]) if len(sub) > 1 else c
+                    h = float(sub["High"].iloc[-1])
+                    l = float(sub["Low"].iloc[-1])
+                    ch = c - prev
+                    chp = (ch / prev) * 100 if prev else 0.0
+                    raw = orig_sym.replace("-INDEX", "").replace("-EQ", "").replace("NSE:", "")
+                    out.append({
+                        "n": orig_sym,
+                        "s": "ok",
+                        "v": {
+                            "lp": round(c, 2),
+                            "ch": round(ch, 2),
+                            "chp": round(chp, 2),
+                            "high_price": round(h, 2),
+                            "low_price": round(l, 2),
+                            "short_name": raw,
+                        }
+                    })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    return out
 
 
 class FyersError(RuntimeError):
@@ -113,6 +166,125 @@ def load_token() -> tuple[str | None, dict | None]:
     except Exception:
         pass
     return None, None
+
+_LIVE_STREAM_LTP: dict[str, tuple[float, float]] = {}
+
+
+def format_fyers_symbol(s: str) -> str:
+    clean = s.strip()
+    if clean.startswith("NSE:") or clean.startswith("MCX:"):
+        return clean
+    if clean in ("NIFTY", "NIFTY50", "NIFTY 50", "^NSEI"):
+        return "NSE:NIFTY50-INDEX"
+    if clean in ("BANKNIFTY", "BANK NIFTY", "^NSEBANK"):
+        return "NSE:NIFTYBANK-INDEX"
+    if "CE" in clean or "PE" in clean or "OPT" in clean:
+        return f"NSE:{clean}"
+    return f"NSE:{clean}-EQ"
+
+
+class FyersStreamManager:
+    """Singleton WebSocket connection manager using FyersDataSocket.
+    Streams tick-by-tick market data directly over a persistent TCP connection with
+    ZERO REST API requests consumed. Eliminates REST quota consumption entirely."""
+    _instance: FyersStreamManager | None = None
+    _lock = threading.Lock()
+
+    def __init__(self):
+        self._ws = None
+        self._connected = False
+        self._subscribed: set[str] = set()
+        self._thread: threading.Thread | None = None
+
+    @classmethod
+    def get_instance(cls) -> FyersStreamManager:
+        with cls._lock:
+            if cls._instance is None:
+                cls._instance = FyersStreamManager()
+            return cls._instance
+
+    def start(self):
+        token, _ = load_token()
+        if not token:
+            return
+        if self._connected or (self._thread and self._thread.is_alive()):
+            return
+
+        def _run():
+            try:
+                from fyers_apiv3.FyersWebsocket import data_ws
+                full_token = f"{FYERS_APP_ID}:{token}"
+
+                def on_connect():
+                    self._connected = True
+                    if self._subscribed:
+                        try:
+                            self._ws.subscribe(symbols=list(self._subscribed), data_type="SymbolUpdate")
+                        except Exception:
+                            pass
+
+                def on_message(message):
+                    if isinstance(message, dict) and "symbol" in message and "ltp" in message:
+                        sym = str(message["symbol"]).strip()
+                        raw = sym.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+                        try:
+                            ltp = float(message["ltp"])
+                            now = time.time()
+                            _LIVE_STREAM_LTP[sym] = (now, ltp)
+                            _LIVE_STREAM_LTP[raw] = (now, ltp)
+                            _LIVE_STREAM_LTP[f"NSE:{raw}"] = (now, ltp)
+                        except (ValueError, TypeError):
+                            pass
+
+                def on_error(msg):
+                    pass
+
+                def on_close(msg):
+                    self._connected = False
+
+                self._ws = data_ws.FyersDataSocket(
+                    access_token=full_token,
+                    write_to_file=False,
+                    litemode=False,
+                    reconnect=True,
+                    on_connect=on_connect,
+                    on_message=on_message,
+                    on_error=on_error,
+                    on_close=on_close,
+                )
+                self._ws.connect()
+            except Exception:
+                self._connected = False
+
+        self._thread = threading.Thread(target=_run, daemon=True, name="FyersWebSocketStream")
+        self._thread.start()
+
+    def subscribe(self, symbols: list[str]):
+        if not symbols:
+            return
+        formatted = [format_fyers_symbol(s) for s in symbols]
+        new_syms = [s for s in formatted if s not in self._subscribed]
+        if not new_syms:
+            return
+        self._subscribed.update(new_syms)
+        if self._connected and self._ws:
+            try:
+                self._ws.subscribe(symbols=new_syms, data_type="SymbolUpdate")
+            except Exception:
+                pass
+        else:
+            self.start()
+
+    def get_ltp(self, symbol: str, max_age_secs: float = 30.0) -> float | None:
+        clean = symbol.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+        formatted = format_fyers_symbol(symbol)
+        now = time.time()
+        for k in (formatted, symbol, clean, f"NSE:{clean}"):
+            if k in _LIVE_STREAM_LTP:
+                ts, ltp = _LIVE_STREAM_LTP[k]
+                if (now - ts) <= max_age_secs:
+                    return ltp
+        return None
 
 
 class FyersClient:
@@ -269,16 +441,33 @@ class FyersClient:
 
     def quotes(self, symbols: list[str]) -> list[dict]:
         """Fetch quotes for a list of symbols (e.g. ['NSE:NIFTY50-INDEX', 'NSE:RELIANCE-EQ'])."""
-        sym_str = ",".join(symbols)
+        if not symbols:
+            return []
+        sym_str = ",".join(sorted(set(symbols)))
+        now = time.time()
+
+        # Check in-memory cache to prevent burning Fyers 5000/day quota on rapid polling
+        cached = _QUOTES_CACHE.get(sym_str)
+        if cached and (now - cached[0]) < _QUOTES_CACHE_TTL:
+            return cached[1]
+
         # 1. Direct model query
         model = self._get_direct_model()
         if model:
             try:
                 res = model.quotes({"symbols": sym_str})
-                if isinstance(res, dict) and res.get("s") == "ok" and "d" in res:
+                if isinstance(res, dict) and res.get("s") == "ok" and "d" in res and res["d"]:
+                    _QUOTES_CACHE[sym_str] = (now, res["d"])
                     return res["d"]
             except Exception:
                 pass
+
+        # 2. Fallback to yfinance if Fyers limit reached or offline
+        fallback_quotes = _quotes_from_yfinance(symbols)
+        if fallback_quotes:
+            _QUOTES_CACHE[sym_str] = (now, fallback_quotes)
+            return fallback_quotes
+
         return []
 
     def option_chain(self, symbol: str, strikecount: int = 10) -> dict | None:
@@ -490,7 +679,7 @@ a:hover{{background:#2ea043;}}
   <h2>&#10003; Fyers Connected!</h2>
   <p>Welcome, <b>{name}</b>. Your Fyers API v3 session is now active with zero-delay live market data.</p>
   <p style="color:#8b949e;font-size:13px">You can now return to the Trading Dashboard.</p>
-  <a href="http://localhost:8080/">Open Dashboard</a>
+  <a href="http://localhost:8787/">Open Dashboard</a>
 </div>
 </body>
 </html>"""

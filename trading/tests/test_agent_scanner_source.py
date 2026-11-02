@@ -254,7 +254,8 @@ def test_router_really_does_skip_the_trend_gate_for_fno_scanner(temp_ledger):
 
 
 @pytest.mark.parametrize("state", ["mixed", "down", "unavailable"])
-def test_scanner_trend_gate_is_reapplied_in_code(state):
+def test_scanner_trend_gate_is_reapplied_in_code(monkeypatch, state):
+    monkeypatch.setattr(A, "AGENT_SCANNER_ENFORCE_200MA", True)
     setup = make_setup(trend=state)
     cand = make_candidate(trade=make_trade())
     plan = A.scanner_signal("GLENMARK", setup, cand.trade)
@@ -280,7 +281,7 @@ def test_scanner_trades_are_tagged_and_watchlist_trades_are_not(monkeypatch, tem
     spy = _SpyRouter(temp_ledger)
     results, executed = A._run_scanner_pass(
         A.ScannerSource([cand]), spy, temp_ledger,
-        min_conviction=7, budget=3, dry_run=False)
+        min_conviction=7, budget=3, dry_run=False, trade_options=False)
 
     assert executed == 1
     assert len(spy.signals) == 1
@@ -294,7 +295,7 @@ def test_scanner_trades_are_tagged_and_watchlist_trades_are_not(monkeypatch, tem
 
     # The watchlist path keeps its own tag: execute_recommendation defaults to it.
     rec = _buy_rec(A.AgentTradeRecommendation, symbol="GLENMARK")
-    A.execute_recommendation(rec, spy, min_conviction=7)
+    A.execute_recommendation(rec, spy, min_conviction=7, as_option=False)
     assert spy.signals[1]["strategy_id"] == "orb_ma200_agents"
 
 

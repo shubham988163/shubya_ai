@@ -17,7 +17,7 @@
 param(
     [switch]$Uninstall,
     [switch]$Status,
-    [int]$IntervalMinutes = 5
+    [int]$IntervalMinutes = 1
 )
 
 $ErrorActionPreference = "Stop"
@@ -25,6 +25,7 @@ $ErrorActionPreference = "Stop"
 $TaskName = "RanchoTrade-AgentTrader"
 $Root     = Split-Path -Parent $PSScriptRoot
 $Runner   = Join-Path $Root "run_ai_trader.bat"
+$VbsRunner = Join-Path $Root "scripts\run_trader_silent.vbs"
 
 function Show-Status {
     Write-Host "--- scheduled task ---"
@@ -68,14 +69,15 @@ $trigger.Repetition = (New-ScheduledTaskTrigger `
     -RepetitionDuration (New-TimeSpan -Hours 8)).Repetition
 
 $action = New-ScheduledTaskAction `
-    -Execute "cmd.exe" `
-    -Argument "/c `"$Runner`"" `
+    -Execute "wscript.exe" `
+    -Argument "`"$VbsRunner`"" `
     -WorkingDirectory $Root
 
 $settings = New-ScheduledTaskSettingsSet `
     -StartWhenAvailable `
     -DontStopOnIdleEnd `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 15)
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 4) `
+    -MultipleInstances IgnoreNew
 
 if (Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue) {
     Unregister-ScheduledTask -TaskName $TaskName -Confirm:$false

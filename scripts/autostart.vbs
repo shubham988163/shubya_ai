@@ -10,12 +10,12 @@ projectDir = fso.GetParentFolderName(scriptDir)
 WshShell.CurrentDirectory = projectDir
 
 Dim pythonExe
-If fso.FileExists(projectDir & "\.venv\Scripts\pythonw.exe") Then
-    pythonExe = projectDir & "\.venv\Scripts\pythonw.exe"
-ElseIf fso.FileExists("C:\Users\shubham.panchal\AppData\Local\Programs\Python\Python312\pythonw.exe") Then
-    pythonExe = "C:\Users\shubham.panchal\AppData\Local\Programs\Python\Python312\pythonw.exe"
+If fso.FileExists("C:\Users\shubham.panchal\AppData\Local\Programs\Python\Python312\python.exe") Then
+    pythonExe = "C:\Users\shubham.panchal\AppData\Local\Programs\Python\Python312\python.exe"
+ElseIf fso.FileExists(projectDir & "\.venv\Scripts\python.exe") Then
+    pythonExe = projectDir & "\.venv\Scripts\python.exe"
 Else
-    pythonExe = "pythonw.exe"
+    pythonExe = "python.exe"
 End If
 
 ' Run dashboard on 8787 hidden (0 = hide window, false = do not wait)
