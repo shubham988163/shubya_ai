@@ -162,8 +162,9 @@ def test_reentry_cooldown_rejection(temp_ledger):
     assert router.execute(unrelated_sig) is not None
 
 
-def test_max_daily_trades_limit(temp_ledger):
+def test_max_daily_trades_limit(temp_ledger, monkeypatch):
     """Router must halt and reject any new trade once MAX_DAILY_TRADES is reached today."""
+    monkeypatch.setattr("trading.execution_router.MAX_DAILY_TRADES", 3)
     router = ExecutionRouter(mode="paper", ledger=temp_ledger)
 
     stocks = ["SBIN", "TCS", "INFY"]
@@ -258,12 +259,12 @@ def test_index_options_execution_and_guards(temp_ledger, monkeypatch):
         option=opt_plan,
     )
 
-    # 1. Valid plan executes with correct symbol, lot size 75, and option parameters
+    # 1. Valid plan executes with correct symbol, lot size 65, and option parameters
     res = _evaluate_and_execute_index_plan(valid_nifty_plan, router, temp_ledger, dry_run=False)
     assert res is not None
     assert res["executed"] is True
     assert res["symbol"] == "NSE:NIFTY26NOV24500CE"
-    assert res["qty"] == 75
+    assert res["qty"] == 65
 
     # 2. Duplicate NIFTY trade is strictly skipped by deduplication
     res_dup = _evaluate_and_execute_index_plan(valid_nifty_plan, router, temp_ledger, dry_run=False)
@@ -361,8 +362,8 @@ def test_stock_lot_wise_risk_and_max_viable_premiums():
     assert get_lot_size("NSE:MUTHOOTFIN26NOV2450CE") == 250
     assert get_lot_size("CDSL") == 375
     assert get_lot_size("NSE:CDSL26NOV1260CE") == 375
-    assert get_lot_size("TATASTEEL") == 5500
-    assert get_lot_size("NIFTY") == 75
+    assert get_lot_size("TATASTEEL") == 2750
+    assert get_lot_size("NIFTY") == 65
     assert get_lot_size("BANKNIFTY") == 30
     assert get_lot_size("MRF") == 5
 
@@ -373,14 +374,15 @@ def test_stock_lot_wise_risk_and_max_viable_premiums():
     assert 250 * prem_muthoot <= 10000.0
     assert 250 * (prem_muthoot * 0.10) <= 1250.0
 
-    # For NIFTY: lot 75 -> min(1250/(75*0.10)=166.67, 10000/75=133.33) = 133.33 INR max premium
+    # For NIFTY: lot 65 -> min(1250/(65*0.10)=192.31, 10000/65=153.85) = 153.85 INR max premium
     prem_nifty = get_max_viable_option_premium("NIFTY")
-    assert prem_nifty == 133.33
-    assert 75 * (prem_nifty * 0.10) <= 1250.0
+    assert prem_nifty == 153.85
+    assert 65 * (prem_nifty * 0.10) <= 1250.0
 
-    # For TATASTEEL: lot 5500 -> min(1250/(5500*0.10)=2.27, 10000/5500=1.82) = 1.82 INR max premium
+    # For TATASTEEL: lot 2750 -> min(1250/(2750*0.10)=4.55, 10000/2750=3.64) = 3.64 INR max premium
     prem_tatasteel = get_max_viable_option_premium("TATASTEEL")
-    assert prem_tatasteel <= 2.5
+    assert prem_tatasteel == 3.64
+    assert abs(2750 * prem_tatasteel - 10000.0) <= 20.0
 
 
 def test_options_engine_rejects_oversized_contracts_and_noise_stops(temp_ledger):

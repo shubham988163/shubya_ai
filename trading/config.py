@@ -105,8 +105,8 @@ AUTO_EXIT_ON_STOP = True        # Automatically close open positions when traili
 
 # --- Position Deduplication & Re-entry Cooldown ---
 ALLOW_DUPLICATE_SYMBOLS = False      # Strictly disallow opening duplicate trades on the same underlying stock/option
-REENTRY_COOLDOWN_MINUTES = 30       # Minutes to wait before allowing re-entry on the same symbol after a trade exits
-MAX_DAILY_TRADES = 3                # Hard daily limit: maximum total trades allowed per day (stops overtrading)
+REENTRY_COOLDOWN_MINUTES = 2         # Quick 2-minute cooldown (rapid re-entry when a good setup appears)
+MAX_DAILY_TRADES = 10                # Maximum total quality trades allowed per day (plenty of room for good setups)
 AGENT_TRADE_INDEX_OPTIONS = True    # Automatically evaluate and execute NIFTY & BANK NIFTY index option breakout setups
 
 # --- AI agent ---
@@ -171,21 +171,27 @@ DARK_FEED_RISK_CAP = 0.75
 
 # --- Options Trading Settings ---
 INDEX_LOT_SIZES: dict[str, int] = {
-    "NIFTY": 75,
-    "NIFTY 50": 75,
-    "NSE:NIFTY50-INDEX": 75,
+    "NIFTY": 65,
+    "NIFTY 50": 65,
+    "NSE:NIFTY50-INDEX": 65,
     "BANKNIFTY": 30,
     "BANK NIFTY": 30,
     "NSE:NIFTYBANK-INDEX": 30,
-    "FINNIFTY": 65,
+    "SENSEX": 20,
+    "BANKEX": 30,
+    "FINNIFTY": 60,
     "MIDCPNIFTY": 120,
+    "NIFTYNXT50": 25,
+    "SENSEX50": 75,
 }
 
 STOCK_LOT_SIZES: dict[str, int] = {
-    # Large-Cap & Core Watchlist
-    "RELIANCE": 250, "HDFCBANK": 550, "ICICIBANK": 700, "INFY": 400, "TCS": 175,
-    "SBIN": 750, "BHARTIARTL": 475, "ITC": 1600, "LT": 175, "AXISBANK": 625,
-    "KOTAKBANK": 400, "TATAMOTORS": 550, "TATASTEEL": 5500, "BAJFINANCE": 125, "MARUTI": 50,
+    # Large-Cap & Core Watchlist (Active contracts specification)
+    "RELIANCE": 500, "HDFCBANK": 650, "ICICIBANK": 700, "INFY": 400, "TCS": 225,
+    "SBIN": 750, "BHARTIARTL": 475, "ITC": 1725, "LT": 175, "AXISBANK": 625,
+    "KOTAKBANK": 2000, "TATAMOTORS": 1600, "TATASTEEL": 2750, "BAJFINANCE": 750, "MARUTI": 50,
+    "TITAN": 175, "ADANIENT": 309, "WIPRO": 3000, "HINDUNILVR": 300, "SUNPHARMA": 350,
+    "PAGEIND": 20, "IDEA": 71475,
     # F&O Universe - Financials & Non-Banking
     "MUTHOOTFIN": 250, "CDSL": 375, "BAJAJFINSV": 500, "CHOLAFIN": 625, "SHRIRAMFIN": 150,
     "HDFCAMC": 150, "HDFCLIFE": 1100, "ICICIGI": 500, "ICICIPRULI": 1500, "IRFC": 3750,
@@ -194,7 +200,7 @@ STOCK_LOT_SIZES: dict[str, int] = {
     "INDUSINDBK": 500, "PNB": 8000,
     # IT & Tech
     "COFORGE": 150, "HCLTECH": 350, "LTIM": 150, "MPHASIS": 275, "PERSISTENT": 100,
-    "TECHM": 600, "WIPRO": 1500, "NAUKRI": 75, "ZOMATO": 2100, "NYKAA": 1875,
+    "TECHM": 600, "NAUKRI": 75, "ZOMATO": 2100, "NYKAA": 1875,
     "PAYTM": 900, "POLICYBZR": 350,
     # Auto & Ancillaries
     "ASHOKLEY": 5000, "BAJAJ-AUTO": 125, "BALKRISIND": 300, "BHARATFORG": 500, "EICHERMOT": 150,
@@ -204,28 +210,28 @@ STOCK_LOT_SIZES: dict[str, int] = {
     "NATIONALUM": 3750, "SAIL": 4000, "VEDL": 1150, "COALINDIA": 2100,
     # Pharma & Healthcare
     "ALKEM": 100, "APOLLOHOSP": 125, "AUROPHARMA": 550, "BIOCON": 2500, "CIPLA": 650,
-    "DIVISLAB": 200, "DRREDDY": 125, "LAURUSLABS": 1700, "LUPIN": 425, "SUNPHARMA": 350,
+    "DIVISLAB": 200, "DRREDDY": 125, "LAURUSLABS": 1700, "LUPIN": 425,
     "TORNTPHARM": 250, "ZYDUSLIFE": 900,
     # Energy, Oil & Power
     "ADANIENSOL": 700, "ADANIGREEN": 600, "BPCL": 1800, "GAIL": 2650, "HINDPETRO": 1350,
     "IOC": 4875, "NHPC": 6750, "NTPC": 1500, "OIL": 1350, "ONGC": 3850, "POWERGRID": 1800, "TATAPOWER": 1350,
     # FMCG & Retail
-    "BRITANNIA": 200, "COLPAL": 200, "DABUR": 1250, "GODREJCP": 500, "HINDUNILVR": 300,
-    "JUBLFOOD": 1250, "MARICO": 1200, "NESTLEIND": 250, "PAGEIND": 15, "TATACONSUM": 900,
-    "TITAN": 175, "TRENT": 100, "UBL": 400, "VBL": 1500,
+    "BRITANNIA": 200, "COLPAL": 200, "DABUR": 1250, "GODREJCP": 500,
+    "JUBLFOOD": 1250, "MARICO": 1200, "NESTLEIND": 250, "TATACONSUM": 900,
+    "TRENT": 100, "UBL": 400, "VBL": 1500,
     # Cement, Infra & Realty
     "ACC": 300, "AMBUJACEM": 900, "DLF": 825, "GODREJPROP": 200, "GRASIM": 475,
     "LODHA": 425, "OBEROIRLTY": 350, "PRESTIGE": 400, "SHREECEM": 25, "ULTRACEMCO": 100,
     # Telecom, Media & Capital Goods
-    "IDEA": 80000, "INDUSTOWER": 1700, "PVRINOX": 400, "ZEEL": 3000, "ABB": 125,
-    "ADANIENT": 300, "ADANIPORTS": 400, "ASIANPAINT": 200, "BDL": 400, "BEL": 2850,
+    "INDUSTOWER": 1700, "PVRINOX": 400, "ZEEL": 3000, "ABB": 125,
+    "ADANIPORTS": 400, "ASIANPAINT": 200, "BDL": 400, "BEL": 2850,
     "CONCOR": 1000, "CUMMINSIND": 300, "DEEPAKNTR": 300, "HAL": 150, "HAVELLS": 500,
     "INDIGO": 150, "IRCTC": 875, "PIDILITIND": 250, "POLYCAB": 125, "SIEMENS": 125,
     "SRF": 375, "TATACHEM": 550, "UPL": 1300,
 }
 
 DEFAULT_STOCK_OPTION_LOT = 250
-MAX_OPTION_POSITION_VALUE = 10_000.0  # INR; hard cap per option trade (strictly blocks oversized contracts)
+MAX_OPTION_POSITION_VALUE = 25_000.0  # INR; hard cap per option trade (strictly blocks oversized contracts)
 MAX_OPTION_RISK_PER_TRADE = 1250.0    # INR; max risk per option trade (allows 1-lot technical stop loss)
 OPTION_STOP_LOSS_PCT = 0.10           # 10% maximum stop loss (cuts loss small instead of 30% collapse)
 MIN_OPTION_STOP_LOSS_PCT = 0.03       # 3% minimum stop loss distance (stops tighter than 3% get noise-stopped)

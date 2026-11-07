@@ -341,6 +341,9 @@ def _handle_close(data: dict) -> dict:
         exit_price = _get_ltp(t["symbol"])
 
     if exit_price is None or exit_price <= 0:
+        exit_price = float(t["entry_price"]) if t["entry_price"] else 0.0
+
+    if exit_price is None or exit_price <= 0:
         return {"ok": False, "error": f"Cannot exit trade #{trade_id}: live market price unavailable for {t['symbol']}"}
 
     sym = t["symbol"]
@@ -607,6 +610,25 @@ def _evaluate_open_trades_and_trailing_stops(trades: list[dict] | None = None, l
 
             # Auto-exit: ONLY execute if we have a genuine live quote from the exchange feed
             is_today = (t.get("date") == today)
+
+            # EOD auto-squareoff: close open intraday positions after SQUAREOFF_TIME (15:15 IST)
+            from trading.config import SQUAREOFF_TIME
+            now_hm = datetime.now(IST).strftime("%H:%M")
+            if is_today and now_hm >= SQUAREOFF_TIME:
+                exit_price = ltp if has_real_quote else entry
+                exit_reason = "eod_squareoff"
+                charges = options_round_trip(entry, exit_price, qty) if is_opt else round_trip_charges(entry, exit_price, qty)
+                closed_pnl = ledger_inst.record_exit(trade_id, round(exit_price, 2), charges=round(charges, 2))
+                t["status"] = "closed"
+                t["exit_price"] = round(exit_price, 2)
+                t["exit_ts"] = time.time()
+                t["pnl"] = round(closed_pnl, 2)
+                t["charges"] = round(charges, 2)
+                t["exit_reason"] = exit_reason
+                if trade_id in _TRAIL_STATES:
+                    del _TRAIL_STATES[trade_id]
+                continue
+
             stop_hit = (side == "BUY" and ltp <= current_sl and current_sl > 0) or (side == "SELL" and ltp >= current_sl and current_sl > 0)
             target_hit = (side == "BUY" and target > 0 and ltp >= target) or (side == "SELL" and target > 0 and ltp <= target)
 
@@ -958,6 +980,8 @@ def get_target_data(from_today: bool = True, start_date: str | None = None) -> d
 _PAGE_TEMPLATE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232F9FDB'/%3E%3Cpath d='M25 65 L45 45 L60 55 L80 30' stroke='%23fff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="alternate icon" href="/favicon.ico">
 <title>Trading Agent Dashboard</title>
 <style>
 __THEME__
@@ -1489,18 +1513,18 @@ __TOPBAR__
           <div class="agent-avatar">📈</div>
           <div>
             <div class="agent-name">1. Technical Analyst</div>
-            <div class="agent-role">ORB &amp; Multi-TF 200MA Gate</div>
+            <div class="agent-role">ORB + Multi-MA &amp; 365 Wall Gate</div>
           </div>
           <span class="agent-status-pill" id="techStatus" style="background:var(--accent-soft);color:var(--accent)">● Standby</span>
         </div>
         <div style="font-size:11px;color:var(--ink-3);display:flex;gap:5px;flex-wrap:wrap">
-          <span class="bn-chip" style="color:#38bdf8">ORB 09:15-09:30</span>
-          <span class="bn-chip" style="color:#a855f7">1H &amp; 30m 200 SMA</span>
-          <span class="bn-chip" style="color:#eab308">Session VWAP</span>
-          <span class="bn-chip">Vol Spike ≥1.5x</span>
+          <span class="bn-chip" style="color:#38bdf8">ORB 09:15-09:30 + Bias</span>
+          <span class="bn-chip" style="color:#a855f7">30m &amp; 1H 200 SMA</span>
+          <span class="bn-chip" style="color:#eab308">Daily 50 &amp; 200 SMA</span>
+          <span class="bn-chip" style="color:#ec4899">Daily 365 Wall Veto</span>
         </div>
         <div class="agent-body" id="techOutput">
-          Audits the 09:15-09:30 Opening Range (0.3%-1.5% range filter), validates 200 SMA trend gate across 1H and 30m, session VWAP slope, and 5m ATR volatility.
+          Audits the 09:15-09:30 Opening Range (0.3%-1.5%), first 15m candle bias (Green/Red), verifies 30m &amp; 1H 200 SMA + Daily 50 &amp; 200 SMA trend alignment, session VWAP, and confirms price is safe from the Daily 365 MA Wall.
         </div>
       </div>
 
@@ -1515,12 +1539,13 @@ __TOPBAR__
           <span class="agent-status-pill" id="bullStatus" style="background:var(--good-soft);color:var(--good)">● Standby</span>
         </div>
         <div style="font-size:11px;color:var(--ink-3);display:flex;gap:5px;flex-wrap:wrap">
-          <span class="bn-chip" style="color:#22c55e">Uptrend Gate (LTP > 200MA)</span>
-          <span class="bn-chip">OR-H Breakout Close</span>
-          <span class="bn-chip">Volume Surge ≥1.5x</span>
+          <span class="bn-chip" style="color:#22c55e">Green 15m Bias</span>
+          <span class="bn-chip">30m &amp; 1H 200 Uptrend</span>
+          <span class="bn-chip">Daily 50/200 Bull</span>
+          <span class="bn-chip">Safe from 365 Wall</span>
         </div>
         <div class="agent-body" id="bullOutput">
-          Argues the Long breakout thesis ONLY when price is strictly above BOTH 1H &amp; 30m 200 SMAs, with fresh candle close above OR-High and volume expansion.
+          Argues the Long breakout thesis ONLY when the first 15m candle is green, price is strictly above 30m &amp; 1H 200 SMAs and Daily 50 &amp; 200 SMAs, clear of the 365 MA wall, with volume ≥ 1.5x and VWAP hold.
         </div>
       </div>
 
@@ -1535,12 +1560,13 @@ __TOPBAR__
           <span class="agent-status-pill" id="bearStatus" style="background:var(--bad-soft);color:var(--bad)">● Standby</span>
         </div>
         <div style="font-size:11px;color:var(--ink-3);display:flex;gap:5px;flex-wrap:wrap">
-          <span class="bn-chip" style="color:#ef4444">Downtrend Gate (LTP < 200MA)</span>
-          <span class="bn-chip">OR-L Breakdown</span>
-          <span class="bn-chip">Range Trap Audit (&lt;0.3% / &gt;1.5%)</span>
+          <span class="bn-chip" style="color:#ef4444">Red 15m Bias</span>
+          <span class="bn-chip">30m &amp; 1H 200 Downtrend</span>
+          <span class="bn-chip">Daily 50/200 Bear</span>
+          <span class="bn-chip">365 MA Wall Trap Check</span>
         </div>
         <div class="agent-body" id="bearOutput">
-          Audits for false breakout wicks, range disqualification (&lt;0.3% or &gt;1.5%), overhead 200 MAs, or short breakdown setups below OR-Low.
+          Audits for red 15m candle breakdown, confirms downtrend across 30m/1H 200 SMAs and Daily 50/200 SMAs, checks for false breakout wicks, range disqualification, or overhead 365 MA walls.
         </div>
       </div>
 
@@ -1550,18 +1576,18 @@ __TOPBAR__
           <div class="agent-avatar">⚖️</div>
           <div>
             <div class="agent-name">4. Trader Decision Agent</div>
-            <div class="agent-role">ORB + 200MA Synthesis &amp; Risk Kernel</div>
+            <div class="agent-role">ORB + Multi-MA Execution &amp; Risk Kernel</div>
           </div>
           <span class="agent-status-pill" id="traderStatus" style="background:var(--warn-soft);color:var(--warn)">● Arbitrator</span>
         </div>
         <div style="font-size:11px;color:var(--ink-3);display:flex;gap:5px;flex-wrap:wrap">
-          <span class="bn-chip" style="color:#eab308">Strict Rule Enforcement</span>
-          <span class="bn-chip">Structural ATR Stop</span>
-          <span class="bn-chip">2.0 R:R Target</span>
+          <span class="bn-chip" style="color:#eab308">Strict Multi-MA Gate</span>
+          <span class="bn-chip">Opposite OR Stop</span>
+          <span class="bn-chip">1:1.5 R:R Target</span>
           <span class="bn-chip">Conviction (≥7/10)</span>
         </div>
         <div class="agent-body" id="traderOutput">
-          Strictly enforces the 6 ORB + 200MA rules. Dispatches BUY/SELL orders with structural ATR stops and 2.0 R:R only if conviction ≥7/10; otherwise mandates HOLD.
+          Strictly enforces the ORB + Multi-MA rulebook. Dispatches BUY/SELL orders with 1:1.5 R:R targets and opposite range stops only if conviction ≥7/10 and all multi-timeframe filters agree; otherwise mandates HOLD.
         </div>
       </div>
     </div>
@@ -1922,15 +1948,26 @@ function createSparkline(container, values, color = '#38bdf8') {
   ctx.stroke();
 }
 
-// Notification System
+// Notification System (clean bottom-right toast stack, never covers topbar brand)
 const Notifications = {
   show(msg, type = 'info', duration = 3000) {
+    let container = document.getElementById('toastContainer');
+    if (!container) {
+      container = document.createElement('div');
+      container.id = 'toastContainer';
+      container.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:380px';
+      document.body.appendChild(container);
+    }
     const n = document.createElement('div');
     n.className = `alert-badge ${type}`;
     n.textContent = msg;
-    n.style.cssText = 'position:fixed;top:20px;right:20px;z-index:2000;box-shadow:0 4px 12px rgba(0,0,0,.2)';
-    document.body.appendChild(n);
-    setTimeout(() => n.remove(), duration);
+    n.style.cssText = 'pointer-events:auto;box-shadow:0 8px 24px rgba(0,0,0,0.45);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;transition:all .25s ease;animation:slideIn .2s;background:var(--card);border:1px solid var(--line-2)';
+    container.appendChild(n);
+    setTimeout(() => {
+      n.style.opacity = '0';
+      n.style.transform = 'translateY(10px)';
+      setTimeout(() => n.remove(), 250);
+    }, duration);
   }
 };
 
@@ -2950,8 +2987,8 @@ async function runCouncilDebate(sym, minConv = 7) {
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px;margin-top:10px;background:var(--cell);padding:10px;border-radius:8px;border:1px solid var(--line)">
         <div><span class="small">Recommended Entry:</span> <b class="mono" style="font-size:14px;color:var(--ink);display:block;margin-top:2px">₹${fmt(rec.entry_price)}</b></div>
         <div><span class="small">Strict Structural Stop:</span> <b class="mono" style="font-size:14px;color:var(--bad);display:block;margin-top:2px">₹${fmt(rec.stop_loss)}</b></div>
-        <div><span class="small">2.0 R:R Target:</span> <b class="mono" style="font-size:14px;color:var(--good);display:block;margin-top:2px">₹${fmt(rec.target)}</b></div>
-        <div><span class="small">Risk-Reward Ratio:</span> <b class="mono" style="font-size:14px;color:var(--accent);display:block;margin-top:2px">${rec.stop_loss && rec.target && rec.entry_price ? (Math.abs((rec.target - rec.entry_price) / (rec.entry_price - rec.stop_loss || 1))).toFixed(2) + " : 1" : "2.0 : 1"}</b></div>
+        <div><span class="small">1.5 R:R Target:</span> <b class="mono" style="font-size:14px;color:var(--good);display:block;margin-top:2px">₹${fmt(rec.target)}</b></div>
+        <div><span class="small">Risk-Reward Ratio:</span> <b class="mono" style="font-size:14px;color:var(--accent);display:block;margin-top:2px">${rec.stop_loss && rec.target && rec.entry_price ? (Math.abs((rec.target - rec.entry_price) / (rec.entry_price - rec.stop_loss || 1))).toFixed(2) + " : 1" : "1.50 : 1"}</b></div>
       </div>
     `;
 
@@ -3360,11 +3397,6 @@ document.addEventListener('DOMContentLoaded', () => {
   
   console.log('Enhanced Dashboard Initialized ✓');
   console.log('Features: Collapsible sections, Quick-close modal, Theme toggle, Network retry, Analytics tabs');
-  
-  // Show welcome notification
-  setTimeout(() => {
-    Notifications.show('📊 Enhanced Dashboard Ready · All features active', 'success', 4000);
-  }, 500);
 });
 
 // Add fade-in animation
@@ -3613,6 +3645,8 @@ PAGE = (_PAGE_TEMPLATE
 _TARGET_PAGE_TEMPLATE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232F9FDB'/%3E%3Cpath d='M25 65 L45 45 L60 55 L80 30' stroke='%23fff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="alternate icon" href="/favicon.ico">
 <title>🎯 15K → 1L Target Challenge · Trading Agent</title>
 <style>
 __THEME__
@@ -4237,40 +4271,70 @@ TARGET_PAGE = (_TARGET_PAGE_TEMPLATE
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        url = urlparse(self.path)
+        raw_path = self.path
+        while raw_path.startswith("//"):
+            raw_path = raw_path[1:]
+        if not raw_path.startswith("/"):
+            raw_path = "/" + raw_path
+        url = urlparse(raw_path)
+        path = url.path or "/"
+
+        # Serve favicon immediately for /favicon.ico and //favicon.ico requests
+        if path == "/favicon.ico" or "favicon.ico" in self.path:
+            _ico = (
+                b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                b'<rect width="100" height="100" rx="20" fill="#2F9FDB"/>'
+                b'<path d="M25 65 L45 45 L60 55 L80 30" stroke="#fff" '
+                b'stroke-width="8" fill="none" stroke-linecap="round" '
+                b'stroke-linejoin="round"/></svg>'
+            )
+            return self._send(200, "image/svg+xml", _ico)
+
         # Check Forex & Delta Exchange endpoints
         from trading import forex_web
-        forex_res = forex_web.serve_get(url.path, parse_qs(url.query))
+        forex_res = forex_web.serve_get(path, parse_qs(url.query))
         if forex_res is not None:
             return self._send(*forex_res)
+
+        # Check Indian Markets TradingView Charts Station endpoints
+        from trading import indian_charts_web
+        charts_res = indian_charts_web.serve_get(path, parse_qs(url.query))
+        if charts_res is not None:
+            return self._send(*charts_res)
 
         # The F&O scanner page and its API live in trading.fno.web; they are
         # served from here too so one process covers both views. "/" is not
         # delegated — that is this dashboard's own page.
-        fno = fno_web.serve(url.path, parse_qs(url.query))
+        fno = fno_web.serve(path, parse_qs(url.query))
         if fno is not None:
             return self._send(*fno)
-        if url.path in ("/api/target-data", "/api/target"):
+        if path in ("/api/target-data", "/api/target"):
             q = parse_qs(url.query)
             scope = q.get("scope", ["today"])[0]
             from_today = (scope != "all" and q.get("all", ["0"])[0] != "1")
             body = json.dumps(get_target_data(from_today=from_today), default=str).encode()
             self._send(200, "application/json", body)
-        elif url.path in ("/target", "/goal", "/challenge"):
+        elif path in ("/target", "/goal", "/challenge"):
             self._send(200, "text/html; charset=utf-8", TARGET_PAGE.encode())
-        elif url.path == "/api/data":
+        elif path == "/api/data":
             q = parse_qs(url.query)
             body = json.dumps(get_data(q.get("date", [None])[0]),
                               default=str).encode()
             self._send(200, "application/json", body)
-        elif url.path == "/":
+        elif path == "/":
             self._send(200, "text/html; charset=utf-8", PAGE.encode())
         else:
             self._send(404, "text/plain", b"not found")
 
     def do_POST(self):  # noqa: N802
         try:
-            url = urlparse(self.path)
+            raw_path = self.path
+            while raw_path.startswith("//"):
+                raw_path = raw_path[1:]
+            if not raw_path.startswith("/"):
+                raw_path = "/" + raw_path
+            url = urlparse(raw_path)
+            path = url.path or "/"
             length = int(self.headers.get("Content-Length", 0))
             try:
                 body = json.loads(self.rfile.read(length)) if length > 0 else {}

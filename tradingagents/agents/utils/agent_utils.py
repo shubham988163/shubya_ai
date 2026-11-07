@@ -14,7 +14,11 @@ from tradingagents.agents.utils.fundamental_data_tools import (
     get_fundamentals,
     get_income_statement,
 )
-from tradingagents.agents.utils.macro_data_tools import get_macro_indicators
+from tradingagents.agents.utils.macro_data_tools import (
+    get_fii_dii_flows,
+    get_india_macro,
+    get_macro_indicators,
+)
 from tradingagents.agents.utils.market_data_validation_tools import get_verified_market_snapshot
 from tradingagents.agents.utils.news_data_tools import (
     get_global_news,
@@ -37,6 +41,8 @@ __all__ = [
     "get_global_news",
     "get_insider_transactions",
     "get_macro_indicators",
+    "get_india_macro",
+    "get_fii_dii_flows",
     "get_prediction_markets",
     "get_verified_market_snapshot",
     "build_instrument_context",
@@ -210,8 +216,17 @@ def get_instrument_context_from_state(state: Mapping[str, Any]) -> str:
     context = state.get("instrument_context")
     if isinstance(context, str) and context.strip():
         return context
+
+    ticker = str(state.get("company_of_interest") or state.get("ticker") or "").strip()
+    market = str(state.get("market") or "").strip().lower()
+    is_india = market in ("india", "in", "nse", "bse") or ticker.endswith((".NS", ".BO"))
+    if is_india and ticker:
+        ticker = ticker.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").strip()
+        if not (ticker.endswith(".NS") or ticker.endswith(".BO")):
+            ticker = f"{ticker}.NS"
+
     return build_instrument_context(
-        str(state["company_of_interest"]),
+        ticker,
         state.get("asset_type", "stock"),
     )
 

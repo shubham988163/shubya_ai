@@ -17,8 +17,10 @@ from tradingagents.agents.utils.agent_utils import (
     get_balance_sheet,
     get_cashflow,
     get_fundamentals,
+    get_fii_dii_flows,
     get_global_news,
     get_income_statement,
+    get_india_macro,
     get_indicators,
     get_insider_transactions,
     get_macro_indicators,
@@ -244,11 +246,13 @@ class TradingAgentsGraph:
             ),
             "news": ToolNode(
                 [
-                    # News and insider information
+                    # News, macro, prediction markets, and flow information
                     get_news,
                     get_global_news,
                     get_insider_transactions,
                     get_macro_indicators,
+                    get_india_macro,
+                    get_fii_dii_flows,
                     get_prediction_markets,
                 ]
             ),

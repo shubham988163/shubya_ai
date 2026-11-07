@@ -404,9 +404,16 @@ STRATEGIES = {
         "stop": swing_stop, "rr": RR_TARGET,
         "bias": lambda bar: bar["ema_fast"] > bar["ema_slow"],
     },
-    # ORB + Multi-TF 200 MA trend-filter strategy
+    # ORB + Multi-TF 200 MA trend-filter strategy (paused / legacy)
     "orb_ma200": {
         "id": "orb_ma200",
+        "instance": None,
+        "prepare": lambda df: df,
+        "bias": lambda bar: True,
+    },
+    # New live default: ORB + Multi-Timeframe MAs + Daily 365 Wall Strategy
+    "orb_multi_ma": {
+        "id": "orb_multi_ma",
         "instance": None,
         "prepare": lambda df: df,
         "bias": lambda bar: True,
@@ -423,12 +430,16 @@ def market_open_now() -> bool:
 
 
 class Engine:
-    def __init__(self, router: ExecutionRouter, ledger: Ledger, strategy: str = "ema",
+    def __init__(self, router: ExecutionRouter, ledger: Ledger, strategy: str = "orb_multi_ma",
                  trail_config=None):
-        self.strat = STRATEGIES[strategy]
+        self.strat = STRATEGIES.get(strategy) or STRATEGIES["orb_multi_ma"]
         if "instance" in self.strat and self.strat["instance"] is None:
-            from trading.strategies.orb_ma200 import ORBMA200Strategy
-            self.strat["instance"] = ORBMA200Strategy()
+            if self.strat["id"] == "orb_multi_ma":
+                from trading.strategies.orb_multi_ma import ORBMultiMAStrategy
+                self.strat["instance"] = ORBMultiMAStrategy()
+            else:
+                from trading.strategies.orb_ma200 import ORBMA200Strategy
+                self.strat["instance"] = ORBMA200Strategy()
         self.router = router
         self.ledger = ledger
         # Trailing-stop toggle. Defaults to the system setting (off), so backtest and live

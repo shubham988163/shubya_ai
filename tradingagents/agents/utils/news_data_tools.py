@@ -13,6 +13,7 @@ def get_news(
     start_date: Annotated[str, "Start date in yyyy-mm-dd format"],
     end_date: Annotated[str, "End date in yyyy-mm-dd format"],
     trade_date: Annotated[str, InjectedState("trade_date")] = "",
+    market: Annotated[str, InjectedState("market")] = "",
 ) -> str:
     """
     Retrieve news data for a given ticker symbol.
@@ -24,8 +25,19 @@ def get_news(
     Returns:
         str: A formatted string containing news data
     """
+    cleaned_ticker = ticker.strip()
+    m = str(market or "").strip().lower()
+    is_india = (m in ("india", "in", "nse", "bse")) or cleaned_ticker.endswith((".NS", ".BO")) or cleaned_ticker.startswith(("NSE:", "BSE:"))
+    if is_india:
+        cleaned_ticker = cleaned_ticker.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").strip()
+        if not (cleaned_ticker.endswith(".NS") or cleaned_ticker.endswith(".BO")):
+            cleaned_ticker = f"{cleaned_ticker}.NS"
+    else:
+        # US market: plain ticker, do not append suffix
+        cleaned_ticker = cleaned_ticker.replace(".NS", "").replace(".BO", "").strip()
+
     start_date, end_date = as_of_window(start_date, end_date, trade_date)
-    return route_to_vendor("get_news", ticker, start_date, end_date)
+    return route_to_vendor("get_news", cleaned_ticker, start_date, end_date)
 
 @tool
 def get_global_news(

@@ -41,6 +41,20 @@ IST = ZoneInfo("Asia/Kolkata")
 def get_lot_size(symbol: str) -> int:
     """Return standard contract lot size for an index or stock."""
     from trading.execution_router import extract_underlying
+    clean = str(symbol).upper()
+    if "BANKNIFTY" in clean:
+        return INDEX_LOT_SIZES.get("BANKNIFTY", 30)
+    if "FINNIFTY" in clean:
+        return INDEX_LOT_SIZES.get("FINNIFTY", 60)
+    if "MIDCPNIFTY" in clean:
+        return INDEX_LOT_SIZES.get("MIDCPNIFTY", 120)
+    if "BANKEX" in clean:
+        return INDEX_LOT_SIZES.get("BANKEX", 30)
+    if "SENSEX" in clean:
+        return INDEX_LOT_SIZES.get("SENSEX", 20)
+    if "NIFTY" in clean and "BANK" not in clean:
+        return INDEX_LOT_SIZES.get("NIFTY", 65)
+
     und = extract_underlying(symbol).upper()
     if und in INDEX_LOT_SIZES:
         return INDEX_LOT_SIZES[und]

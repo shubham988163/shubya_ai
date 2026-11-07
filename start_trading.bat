@@ -3,7 +3,7 @@ title RanchoTrade Dashboard Launcher
 cd /d "%~dp0"
 
 echo ===================================================
-echo   Starting RanchoTrade Dashboard & Live Services...
+echo   Starting RanchoTrade Dashboard ^& Live Services...
 echo ===================================================
 
 wscript.exe "%~dp0scripts\autostart.vbs"

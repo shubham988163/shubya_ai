@@ -487,7 +487,10 @@ def lazy_fetch_indian_context(
         ticker = yf.Ticker(yf_sym)
 
     # News fetch & curated filter
-    raw_news = getattr(ticker, "news", []) or []
+    try:
+        raw_news = getattr(ticker, "news", []) or []
+    except Exception:
+        raw_news = []
     filtered_news, news_summary, _ = filter_curated_news(raw_news, symbol)
 
     # Fallback to Google News RSS if raw_news from yfinance is empty or yields no approved news

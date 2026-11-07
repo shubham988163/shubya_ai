@@ -60,6 +60,7 @@ from trading.config import (
     ALLOW_DUPLICATE_SYMBOLS,
     DAILY_LOSS_LIMIT,
     DAILY_PROFIT_TARGET,
+    MARKET_OPEN,
     MAX_DAILY_TRADES,
     MAX_POSITION_VALUE,
     NIFTY50,
@@ -68,6 +69,7 @@ from trading.config import (
     REENTRY_COOLDOWN_MINUTES,
     RISK_PER_TRADE,
     SCAN_UNIVERSE,
+    SQUAREOFF_TIME,
     WATCHLIST,
     YF_SUFFIX,
 )
@@ -75,7 +77,8 @@ from trading.execution_router import ExecutionRouter, extract_underlying
 from trading.ledger import Ledger
 from trading.market_facts import MarketFacts, build_market_facts
 from trading.notify import notify
-from trading.strategies.orb_ma200 import ORBMA200Strategy, drop_unclosed_bars
+from trading.strategies.orb_multi_ma import ORBMultiMAStrategy, drop_unclosed_bars
+from trading.strategies.orb_ma200 import ORBMA200Strategy
 from trading.strategy import Signal
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -163,12 +166,13 @@ def compute_indicators(
     df_5m: pd.DataFrame,
     df_30m: pd.DataFrame | None = None,
     df_1h: pd.DataFrame | None = None,
+    strategy: Any | None = None,
 ) -> dict:
-    """Compute indicators delegated to ORBMA200Strategy.compute_setup to avoid duplicate math."""
+    """Compute indicators delegated to strategy compute_setup to avoid duplicate math."""
     if df_5m.empty or len(df_5m) < 10:
         return {}
 
-    strat = ORBMA200Strategy()
+    strat = strategy or ORBMA200Strategy()
     setup = strat.compute_setup(df_5m, "INDICATORS")
     close = df_5m["Close"]
     ema9 = round(float(close.ewm(span=9, adjust=False).mean().iloc[-1]), 2)
@@ -246,12 +250,33 @@ def fetch_symbol_context(symbol: str, *, want_news: bool = False,
     strategy's own computation over real bars, so the council evaluates a
     scanner name against genuine technical facts rather than a bare claim.
     """
-    yf_symbol = symbol + YF_SUFFIX if not symbol.endswith(YF_SUFFIX) else symbol
+    sym_upper = symbol.strip().upper()
+    if sym_upper in ("NIFTY", "NIFTY 50", "NIFTY50", "^NSEI"):
+        yf_symbol = "^NSEI"
+    elif sym_upper in ("BANKNIFTY", "BANK NIFTY", "^NSEBANK"):
+        yf_symbol = "^NSEBANK"
+    elif sym_upper in ("FINNIFTY", "FIN NIFTY"):
+        yf_symbol = "NIFTY_FIN_SERVICE.NS"
+    else:
+        yf_symbol = symbol + YF_SUFFIX if not symbol.endswith(YF_SUFFIX) else symbol
     try:
         ticker = yf.Ticker(yf_symbol)
-        df_5m = ticker.history(period="60d", interval="5m")
-        if df_5m.empty or len(df_5m) < 10:
+        try:
             df_5m = ticker.history(period="5d", interval="5m")
+        except Exception:
+            df_5m = pd.DataFrame()
+        if df_5m.empty or len(df_5m) < 10:
+            try:
+                df_5m = ticker.history(period="60d", interval="5m")
+            except Exception:
+                pass
+        if df_5m.empty:
+            try:
+                df_5m = yf.download(yf_symbol, period="5d", interval="5m", progress=False)
+                if isinstance(df_5m.columns, pd.MultiIndex):
+                    df_5m = df_5m.xs(yf_symbol, level=1, axis=1) if yf_symbol in df_5m.columns.levels[1] else df_5m
+            except Exception:
+                pass
         if df_5m.empty:
             return None
         df_5m = df_5m.tz_convert(IST)
@@ -262,8 +287,8 @@ def fetch_symbol_context(symbol: str, *, want_news: bool = False,
         if df_5m.empty:
             return None
 
-        # Compute setup directly via ORBMA200Strategy (single source of truth)
-        strat = ORBMA200Strategy()
+        # Compute setup directly via ORBMultiMAStrategy (single source of truth)
+        strat = ORBMultiMAStrategy()
         setup = strat.compute_setup(df_5m, symbol, now=now)
         orb_sig = setup["signal"]
 
@@ -272,10 +297,19 @@ def fetch_symbol_context(symbol: str, *, want_news: bool = False,
         sig = plan if plan is not None else orb_sig
         side = sig.side if sig is not None else None
 
-        # 1. Day High & Day Low
-        fast_info = getattr(ticker, "fast_info", None)
-        day_high = getattr(fast_info, "day_high", None) or float(df_5m["High"].max())
-        day_low = getattr(fast_info, "day_low", None) or float(df_5m["Low"].min())
+        # 1. Day High & Day Low (safe fallback to intraday bars)
+        day_high, day_low = None, None
+        try:
+            fast_info = getattr(ticker, "fast_info", None)
+            if fast_info:
+                day_high = getattr(fast_info, "day_high", None)
+                day_low = getattr(fast_info, "day_low", None)
+        except Exception:
+            pass
+        if not day_high:
+            day_high = float(df_5m["High"].max())
+        if not day_low:
+            day_low = float(df_5m["Low"].min())
 
         # 2. Structured Real-Time News Headlines & 3. Structured Quarterly Fundamentals
         # Phase 3 Lazy fetch: executed ONLY for gated candidates (quant strategy + cost-floor passed)
@@ -1014,6 +1048,11 @@ def _evaluate_and_execute_index_plan(
         print(f"    SKIPPED: {reason}")
         return None
 
+    now_hm = datetime.now(IST).strftime("%H:%M")
+    if not dry_run and not (MARKET_OPEN <= now_hm < SQUAREOFF_TIME):
+        print(f"    SKIPPED: outside active market hours ({now_hm} IST; session is {MARKET_OPEN} - {SQUAREOFF_TIME})")
+        return None
+
     # Pre-check 1: Deduplication
     cand_und = sym
     if ledger and not ALLOW_DUPLICATE_SYMBOLS:
@@ -1151,6 +1190,10 @@ def scan_and_trade(
     ledger = router.ledger
 
     if not dry_run and ledger is not None:
+        now_hm = datetime.now(IST).strftime("%H:%M")
+        if not (MARKET_OPEN <= now_hm < SQUAREOFF_TIME):
+            print(f"[-] Standing down: outside active market hours ({now_hm} IST; session is {MARKET_OPEN} - {SQUAREOFF_TIME}). No trades will be opened.")
+            return []
         day_pnl = ledger.day_realized_pnl()
         if day_pnl <= DAILY_LOSS_LIMIT:
             print(f"[-] Standing down: daily loss limit reached ({day_pnl:.2f} <= {DAILY_LOSS_LIMIT:.2f}). No new trades will be opened.")

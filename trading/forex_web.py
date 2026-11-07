@@ -13,6 +13,8 @@ _FOREX_TEMPLATE = r"""<!DOCTYPE html>
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232F9FDB'/%3E%3Cpath d='M25 65 L45 45 L60 55 L80 30' stroke='%23fff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="alternate icon" href="/favicon.ico">
 <title>Forex &amp; Crypto — Delta Exchange 24/7 Trading</title>
 <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
 <style>
@@ -213,7 +215,9 @@ __TOPBAR__
           <button class="btn sm" onclick="searchSymbolChart()" style="padding:5px 9px">Go</button>
         </div>
 
-        <!-- Open in Fullscreen / New Page -->
+        <!-- Open in Fullscreen / New Page / Strategy Overlay / Pine Script -->
+        <button class="btn sm" onclick="toggleStrategyOverlay()" id="btnToggleOverlay" title="Toggle On-Chart Strategy Indicator Overlay" style="border-color:var(--accent);color:var(--accent);font-weight:600">🎯 Strategy Overlay</button>
+        <button class="btn sm" onclick="openPineModal()" title="View & Copy TradingView Pine Script Indicator" style="border-color:var(--good);color:var(--good)">📜 Pine Script</button>
         <button class="btn sm" onclick="openChartModal()" title="View in full-screen modal">⤢ Fullscreen</button>
         <button class="btn sm" onclick="openDedicatedChartPage()" title="Open dedicated chart page">↗ New Page</button>
       </div>
@@ -279,53 +283,53 @@ __TOPBAR__
         <!-- 200 SMA -->
         <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-3);font-weight:700;text-transform:uppercase">
-            <span>⚓ 200 SMA Filter</span>
+            <span>⚓ Trend Filters (Daily + HTF)</span>
             <span id="hudSmaPill" class="badge sm" style="font-size:9px">--</span>
           </div>
-          <div style="font-size:12.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudSmaVal">$--</div>
-          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudSmaNote">Macro Trend Regime</div>
+          <div style="font-size:11.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudSmaVal">$-- / $--</div>
+          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudSmaNote">Daily 50/200 &amp; 200 SMA</div>
         </div>
 
-        <!-- 1H Range (ORB) -->
+        <!-- Opening Range & Bias (ORB) -->
         <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-3);font-weight:700;text-transform:uppercase">
-            <span>⏱️ 1H Opening Range</span>
+            <span>⏱️ Session Range &amp; Bias</span>
             <span id="hudRangePill" class="badge sm" style="font-size:9px">--</span>
           </div>
           <div style="font-size:11.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudRangeVals">H: $-- | L: $--</div>
-          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudRangeWidth">Width: --%</div>
+          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudRangeWidth">Width: --% | Bias: --</div>
         </div>
 
-        <!-- Volume (RVOL) -->
+        <!-- Volume (RVOL >= 1.5x) -->
         <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-3);font-weight:700;text-transform:uppercase">
-            <span>⚡ Volume (RVOL)</span>
+            <span>⚡ Volume (RVOL &ge; 1.5x)</span>
             <span id="hudRvolPill" class="badge sm" style="font-size:9px">--</span>
           </div>
           <div style="font-size:12.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudRvolVal">--x Avg</div>
-          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudRvolNote">Req &ge; 1.2x for Breakout</div>
+          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudRvolNote">Institutional 1.5x Volume Filter</div>
         </div>
 
-        <!-- RSI & ATR -->
+        <!-- Daily 365 MA Wall -->
         <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-3);font-weight:700;text-transform:uppercase">
-            <span>📊 RSI &amp; ATR Noise</span>
-            <span id="hudRsiPill" class="badge sm" style="font-size:9px">--</span>
+            <span>🧱 Daily 365 MA Wall</span>
+            <span id="hudWallPill" class="badge sm ok" style="font-size:9px">--</span>
           </div>
-          <div style="font-size:11.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudRsiAtrVal">RSI: -- | ATR: $--</div>
-          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudAtrNote">Volatility Buffer</div>
+          <div style="font-size:11.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudWallVal">$--</div>
+          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudWallNote">0.5% Wall Safety Gate</div>
         </div>
       </div>
 
       <!-- Strategy Triggers & Levels Banner -->
       <div style="background:var(--bg-2);border:1px solid var(--line);border-radius:8px;padding:8px 12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;font-size:11.5px">
         <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap">
-          <span style="color:var(--ink-3);font-weight:700;font-size:10px;text-transform:uppercase">Strategy Execution Levels:</span>
+          <span style="color:var(--ink-3);font-weight:700;font-size:10px;text-transform:uppercase">ORB + Multi-MA Execution Levels:</span>
           <div>🟢 <b>Long Breakout:</b> <span style="font-family:ui-monospace,monospace;color:var(--good)" id="hudLongTrigger">>$--</span></div>
           <div>🔴 <b>Short Breakdown:</b> <span style="font-family:ui-monospace,monospace;color:var(--bad)" id="hudShortTrigger"><$--</span></div>
-          <div>🛡️ <b>Planned SL:</b> <span style="font-family:ui-monospace,monospace;color:var(--bad)" id="hudPlannedSl">$--</span></div>
-          <div>🎯 <b>1:2 Target:</b> <span style="font-family:ui-monospace,monospace;color:var(--good)" id="hudPlannedT1">$--</span></div>
-          <div>🎯 <b>1:3 Target:</b> <span style="font-family:ui-monospace,monospace;color:var(--good)" id="hudPlannedT2">$--</span></div>
+          <div>🛡️ <b>Opposite Stop:</b> <span style="font-family:ui-monospace,monospace;color:var(--bad)" id="hudPlannedSl">$--</span></div>
+          <div>🎯 <b>1:1.5 Target:</b> <span style="font-family:ui-monospace,monospace;color:var(--good)" id="hudPlannedT1">$--</span></div>
+          <div>🎯 <b>1:2.0 Extended:</b> <span style="font-family:ui-monospace,monospace;color:var(--good)" id="hudPlannedT2">$--</span></div>
         </div>
         <div id="hudReasonsList" style="font-size:10.5px;color:var(--ink-2);display:flex;gap:4px;flex-wrap:wrap">
           <!-- Live Reasons pills injected -->
@@ -334,8 +338,49 @@ __TOPBAR__
     </div>
 
     <!-- Chart Container -->
-    <div style="height:560px;width:100%;background:var(--card);position:relative" id="chartContainer">
+    <div style="height:560px;width:100%;background:var(--card);position:relative;overflow:hidden" id="chartContainer">
       <div id="tradingview_embed_box" style="width:100%;height:100%"></div>
+
+      <!-- Strategy Indicator Floating Chart Overlay -->
+      <div id="chartStrategyOverlay" style="position:absolute;top:12px;right:65px;z-index:20;background:rgba(11,18,32,0.92);backdrop-filter:blur(10px);border:1px solid var(--line);border-radius:9px;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,0.65);font-size:11px;min-width:270px;max-width:320px;pointer-events:auto;transition:all 0.2s ease">
+        <div style="display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid rgba(255,255,255,0.08);padding-bottom:6px;margin-bottom:8px">
+          <div style="display:flex;align-items:center;gap:6px">
+            <span style="font-size:12px">🎯</span>
+            <span style="font-weight:700;font-size:11px;color:var(--ink);letter-spacing:0.04em;text-transform:uppercase">Strategy Indicator Overlay</span>
+          </div>
+          <button onclick="toggleStrategyOverlayCollapse()" id="btnOverlayCollapse" style="background:transparent;border:none;color:var(--ink-3);cursor:pointer;font-size:11px;padding:0 4px" title="Collapse / Expand">▼</button>
+        </div>
+        <div id="chartOverlayBody" style="display:flex;flex-direction:column;gap:5px">
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:var(--good);font-weight:600">🎯 1:1.5 Target:</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:var(--good)" id="coTarget">$--</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#22c55e;font-weight:600">🟢 OR Breakout High:</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:#22c55e" id="coOrHigh">$--</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#eab308;font-weight:600">🟡 Session VWAP:</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:#eab308" id="coVwap">$--</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#a855f7;font-weight:600">🟣 200 SMA (30m/1H):</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:#a855f7" id="coSma">$--</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#ef4444;font-weight:600">🔴 OR Breakdown Low:</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:#ef4444" id="coOrLow">$--</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center">
+            <span style="color:#ec4899;font-weight:600">🧱 Daily 365 MA Wall:</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:#ec4899" id="coWall">$--</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;border-top:1px dashed rgba(255,255,255,0.08);padding-top:5px;margin-top:2px">
+            <span style="color:var(--bad);font-weight:600">🛡️ Planned Stop:</span>
+            <span style="font-family:ui-monospace,monospace;font-weight:700;color:var(--bad)" id="coSl">$--</span>
+          </div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -481,6 +526,29 @@ __TOPBAR__
         <button class="btn sm" onclick="closeChartModal()" style="padding:5px 12px">✕ Close Fullscreen</button>
       </div>
       <div id="fsChartContainer" style="flex:1;width:100%;background:#04070f;position:relative"></div>
+    </div>
+  </div>
+
+  <!-- TradingView Pine Script Modal -->
+  <div id="pineScriptModal" class="council-overlay" style="display:none">
+    <div style="max-width:820px;width:92vw;margin:30px auto;background:var(--card);border:1px solid var(--line-2);border-radius:12px;overflow:hidden;box-shadow:0 24px 60px rgba(0,0,0,0.85);display:flex;flex-direction:column">
+      <div style="background:var(--cell);border-bottom:1px solid var(--line);padding:14px 20px;display:flex;align-items:center;justify-content:space-between">
+        <div style="display:flex;align-items:center;gap:10px">
+          <span style="font-size:22px">📜</span>
+          <div>
+            <div style="font-weight:700;font-size:15px;color:var(--ink)">TradingView Pine Script (ORB + Multi-MA + 365 Wall)</div>
+            <div style="font-size:11px;color:var(--ink-3)">Copy this Pine Script v5 code into TradingView's Pine Editor to plot the exact strategy indicator directly on your chart</div>
+          </div>
+        </div>
+        <button class="btn sm" onclick="closePineModal()" style="padding:5px 12px">✕ Close</button>
+      </div>
+      <div style="padding:16px 20px;display:flex;flex-direction:column;gap:12px">
+        <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+          <span style="font-size:12px;color:var(--ink-2)"><b>Step 1:</b> Click Copy Code below · <b>Step 2:</b> On TradingView, click <i>Pine Editor</i> at the bottom · <b>Step 3:</b> Paste &amp; click <i>Add to chart</i></span>
+          <button class="btn sm go" onclick="copyPineCode()" style="padding:6px 16px;font-weight:700">📋 Copy Pine Script Code</button>
+        </div>
+        <textarea id="pineCodeArea" readonly style="width:100%;height:320px;background:#030712;color:#38bdf8;font-family:ui-monospace,monospace;font-size:11.5px;padding:12px;border:1px solid var(--line);border-radius:8px;line-height:1.5;resize:vertical"></textarea>
+      </div>
     </div>
   </div>
 
@@ -714,53 +782,65 @@ async function fetchActiveSymbolParameters(sym) {
     const vwapNote = document.getElementById("hudVwapNote");
     if (vwapNote) vwapNote.textContent = d.vwap_status;
 
-    // 3. 200 SMA
+    // 3. Trend Filters (Daily 50/200 + 200 SMA)
     const isAboveSma = d.mark_price >= d.sma_200;
     const smaPill = document.getElementById("hudSmaPill");
     if (smaPill) {
+      const isDailyBull = d.daily_50 && d.mark_price > d.daily_50;
       smaPill.className = `badge sm ${isAboveSma ? 'bull' : 'bear'}`;
-      smaPill.textContent = isAboveSma ? "Uptrend" : "Downtrend";
+      smaPill.textContent = isAboveSma ? (isDailyBull ? "Bull (D50/200)" : "Intraday Up") : "Downtrend";
     }
     const smaVal = document.getElementById("hudSmaVal");
-    if (smaVal) smaVal.textContent = `$${fmt(d.sma_200, dec)}`;
+    if (smaVal) {
+      if (d.daily_50 && d.daily_200) {
+        smaVal.textContent = `D50:$${fmt(d.daily_50, dec)} | D200:$${fmt(d.daily_200, dec)}`;
+      } else {
+        smaVal.textContent = `200SMA: $${fmt(d.sma_200, dec)}`;
+      }
+    }
     const smaNote = document.getElementById("hudSmaNote");
     if (smaNote) smaNote.textContent = d.sma_status;
 
-    // 4. 1H Range
+    // 4. Session Range & OR Bias
     const rangePill = document.getElementById("hudRangePill");
     if (rangePill) {
-      rangePill.className = `badge sm ${d.in_range ? 'caution' : 'approve'}`;
-      rangePill.textContent = d.in_range ? "Trapped In Range" : "Breakout";
+      const isGreen = d.or_bias === "GREEN";
+      const isRed = d.or_bias === "RED";
+      rangePill.className = `badge sm ${isGreen ? 'bull' : (isRed ? 'bear' : 'ok')}`;
+      rangePill.textContent = isGreen ? "🟢 Green Bias" : (isRed ? "🔴 Red Bias" : "⚪ Neutral");
     }
     const rangeVals = document.getElementById("hudRangeVals");
     if (rangeVals) rangeVals.textContent = `H: $${fmt(d.range_high, dec)} | L: $${fmt(d.range_low, dec)}`;
     const rangeWidth = document.getElementById("hudRangeWidth");
-    if (rangeWidth) rangeWidth.textContent = `Width: ${d.range_width_pct}% ${d.in_range ? '(Consolidating)' : '(Expanding)'}`;
+    if (rangeWidth) rangeWidth.textContent = `Width: ${d.range_width_pct}% ${d.in_range ? '(Range)' : '(Breakout)'}`;
 
-    // 5. Volume RVOL
-    const isVolSurge = d.rvol >= 1.2;
+    // 5. Volume RVOL (Strategy requires >= 1.5x)
+    const isVolSurge = d.rvol >= 1.5;
     const rvolPill = document.getElementById("hudRvolPill");
     if (rvolPill) {
       rvolPill.className = `badge sm ${isVolSurge ? 'bull' : 'caution'}`;
-      rvolPill.textContent = isVolSurge ? "Surge" : "Subdued";
+      rvolPill.textContent = isVolSurge ? "Surge (>=1.5x)" : "Subdued";
     }
     const rvolVal = document.getElementById("hudRvolVal");
     if (rvolVal) rvolVal.textContent = `${d.rvol}x Volume`;
     const rvolNote = document.getElementById("hudRvolNote");
     if (rvolNote) rvolNote.textContent = d.rvol_status;
 
-    // 6. RSI & ATR
-    const rsiPill = document.getElementById("hudRsiPill");
-    if (rsiPill) {
-      rsiPill.className = `badge sm ${d.rsi >= 55 ? 'bull' : (d.rsi <= 45 ? 'bear' : 'ok')}`;
-      rsiPill.textContent = d.rsi >= 55 ? "Bullish" : (d.rsi <= 45 ? "Bearish" : "Neutral");
+    // 6. Daily 365 MA Wall
+    const wallPill = document.getElementById("hudWallPill");
+    const isWallBlocked = d.wall_note && d.wall_note.includes("Veto");
+    if (wallPill) {
+      wallPill.className = `badge sm ${isWallBlocked ? 'bear' : 'ok'}`;
+      wallPill.textContent = isWallBlocked ? "🔴 Wall Block" : "🟢 Safe";
     }
-    const rsiAtrVal = document.getElementById("hudRsiAtrVal");
-    if (rsiAtrVal) rsiAtrVal.textContent = `RSI: ${d.rsi} | ATR: $${fmt(d.atr, dec)}`;
-    const atrNote = document.getElementById("hudAtrNote");
-    if (atrNote) atrNote.textContent = `Noise Cushion: $${fmt(d.atr * 1.5, dec)}`;
+    const wallVal = document.getElementById("hudWallVal");
+    if (wallVal) {
+      wallVal.textContent = d.daily_365_wall ? `Wall: $${fmt(d.daily_365_wall, dec)}` : "No Wall Nearby";
+    }
+    const wallNote = document.getElementById("hudWallNote");
+    if (wallNote) wallNote.textContent = d.wall_note || "Safe from 365 MA wall";
 
-    // Triggers & Levels
+    // Triggers & Levels (ORB 1:1.5 RR)
     const longTrig = document.getElementById("hudLongTrigger");
     if (longTrig) longTrig.textContent = `> $${fmt(d.long_trigger, dec)}`;
     const shortTrig = document.getElementById("hudShortTrigger");
@@ -768,9 +848,25 @@ async function fetchActiveSymbolParameters(sym) {
     const slEl = document.getElementById("hudPlannedSl");
     if (slEl) slEl.textContent = `$${fmt(d.planned_sl, dec)}`;
     const t1El = document.getElementById("hudPlannedT1");
-    if (t1El) t1El.textContent = `$${fmt(d.planned_target1, dec)}`;
+    if (t1El) t1El.textContent = `$${fmt(d.planned_target1, dec)} (1:1.5 RR)`;
     const t2El = document.getElementById("hudPlannedT2");
-    if (t2El) t2El.textContent = `$${fmt(d.planned_target2, dec)}`;
+    if (t2El) t2El.textContent = `$${fmt(d.planned_target2, dec)} (1:2.0 RR)`;
+
+    // Floating Strategy Indicator Overlay on Chart
+    const coTarget = document.getElementById("coTarget");
+    if (coTarget) coTarget.textContent = `$${fmt(d.planned_target1, dec)}`;
+    const coOrHigh = document.getElementById("coOrHigh");
+    if (coOrHigh) coOrHigh.textContent = `$${fmt(d.range_high, dec)}`;
+    const coVwap = document.getElementById("coVwap");
+    if (coVwap) coVwap.textContent = `$${fmt(d.vwap, dec)}`;
+    const coSma = document.getElementById("coSma");
+    if (coSma) coSma.textContent = `$${fmt(d.sma_200, dec)}`;
+    const coOrLow = document.getElementById("coOrLow");
+    if (coOrLow) coOrLow.textContent = `$${fmt(d.range_low, dec)}`;
+    const coWall = document.getElementById("coWall");
+    if (coWall) coWall.textContent = d.daily_365_wall ? `$${fmt(d.daily_365_wall, dec)} (${d.wall_note})` : 'No Wall Nearby';
+    const coSl = document.getElementById("coSl");
+    if (coSl) coSl.textContent = `$${fmt(d.planned_sl, dec)}`;
 
     // Reasons pills
     const reasonsCont = document.getElementById("hudReasonsList");
@@ -780,6 +876,104 @@ async function fetchActiveSymbolParameters(sym) {
   } catch (err) {
     console.warn("Failed to fetch symbol parameters:", err);
   }
+}
+
+let STRATEGY_OVERLAY_VISIBLE = true;
+let STRATEGY_OVERLAY_COLLAPSED = false;
+
+function toggleStrategyOverlay() {
+  STRATEGY_OVERLAY_VISIBLE = !STRATEGY_OVERLAY_VISIBLE;
+  const el = document.getElementById("chartStrategyOverlay");
+  const btn = document.getElementById("btnToggleOverlay");
+  if (el) el.style.display = STRATEGY_OVERLAY_VISIBLE ? "block" : "none";
+  if (btn) {
+    btn.style.opacity = STRATEGY_OVERLAY_VISIBLE ? "1" : "0.6";
+    btn.textContent = STRATEGY_OVERLAY_VISIBLE ? "🎯 Strategy Overlay: ON" : "🎯 Strategy Overlay: OFF";
+  }
+}
+
+function toggleStrategyOverlayCollapse() {
+  STRATEGY_OVERLAY_COLLAPSED = !STRATEGY_OVERLAY_COLLAPSED;
+  const body = document.getElementById("chartOverlayBody");
+  const btn = document.getElementById("btnOverlayCollapse");
+  if (body) body.style.display = STRATEGY_OVERLAY_COLLAPSED ? "none" : "flex";
+  if (btn) btn.textContent = STRATEGY_OVERLAY_COLLAPSED ? "▲" : "▼";
+}
+
+const PINE_SCRIPT_V5_CODE = `//@version=5
+indicator("ORB + Multi-MA + 365 Wall Strategy", overlay=true)
+
+// 1. Opening Range (first 15m)
+var float or_high = na
+var float or_low = na
+var float or_open = na
+var float or_close = na
+var int or_bias = 0 // 1: green/bull, -1: red/bear
+
+is_new_day = ta.change(time("D"))
+var int bar_count = 0
+if is_new_day
+    bar_count := 0
+    or_high := na
+    or_low := na
+    or_open := open
+    or_bias := 0
+
+bar_count += 1
+
+// First 3 x 5m bars (15 mins)
+if bar_count <= 3
+    or_high := na(or_high) ? high : math.max(or_high, high)
+    or_low := na(or_low) ? low : math.min(or_low, low)
+    or_close := close
+    if bar_count == 3
+        or_bias := or_close > or_open ? 1 : (or_close < or_open ? -1 : 0)
+
+plot(or_high, "ORB Breakout High", color=color.green, linewidth=2, style=plot.style_linebr)
+plot(or_low, "ORB Breakdown Low", color=color.red, linewidth=2, style=plot.style_linebr)
+
+// 2. Multi-Timeframe Trend Filters
+ma30 = request.security(syminfo.tickerid, "30", ta.sma(close, 200))
+ma1h = request.security(syminfo.tickerid, "60", ta.sma(close, 200))
+d50  = request.security(syminfo.tickerid, "D", ta.sma(close, 50))
+d200 = request.security(syminfo.tickerid, "D", ta.sma(close, 200))
+d365 = request.security(syminfo.tickerid, "D", ta.sma(close, 365))
+
+plot(ma30, "30m 200 SMA", color=color.purple, linewidth=1)
+plot(ma1h, "1H 200 SMA", color=color.blue, linewidth=2)
+plot(d50,  "Daily 50 SMA", color=color.orange, linewidth=1)
+plot(d200, "Daily 200 SMA", color=color.yellow, linewidth=2)
+plot(d365, "Daily 365 MA Wall", color=color.fuchsia, linewidth=3)
+
+// 3. Session VWAP
+session_vwap = ta.vwap(hlc3)
+plot(session_vwap, "Session VWAP", color=color.yellow, linewidth=2)
+
+// 4. Background Bias Tint (Green for bull, Red for bear)
+bgcolor(or_bias == 1 ? color.new(color.green, 92) : (or_bias == -1 ? color.new(color.red, 92) : na), title="OR Bias Tint")
+`;
+
+function openPineModal() {
+  const modal = document.getElementById("pineScriptModal");
+  const area = document.getElementById("pineCodeArea");
+  if (area) area.value = PINE_SCRIPT_V5_CODE;
+  if (modal) modal.style.display = "block";
+}
+
+function closePineModal() {
+  const modal = document.getElementById("pineScriptModal");
+  if (modal) modal.style.display = "none";
+}
+
+function copyPineCode() {
+  const area = document.getElementById("pineCodeArea");
+  if (!area) return;
+  area.select();
+  navigator.clipboard.writeText(PINE_SCRIPT_V5_CODE).then(() => {
+    alert("✓ TradingView Pine Script copied to clipboard!\n\nOpen TradingView -> click 'Pine Editor' at bottom -> paste -> click 'Add to chart'.");
+  }).catch(() => {
+    alert("Copied! (Press Ctrl+C to copy selected text)");
+  });
 }
 
 function setChartTf(tf) {
@@ -807,7 +1001,7 @@ function renderTradingViewWidget(containerId, sym, tf) {
   if (!container) return;
   container.innerHTML = "";
 
-  const widgetUrl = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_${Date.now()}&symbol=${encodeURIComponent(tvSym)}&interval=${tf}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=0b1220&studies=RSI%40tv-basicstudies%1FVolume%40tv-basicstudies%1FMASimple%40tv-basicstudies&theme=dark&style=1&timezone=Asia%2FKolkata`;
+  const widgetUrl = `https://s.tradingview.com/widgetembed/?frameElementId=tradingview_${Date.now()}&symbol=${encodeURIComponent(tvSym)}&interval=${tf}&hidesidetoolbar=0&symboledit=1&saveimage=1&toolbarbg=0b1220&studies=VWAP%40tv-basicstudies%1FVolume%40tv-basicstudies%1FMASimple%40tv-basicstudies%1FRSI%40tv-basicstudies&theme=dark&style=1&timezone=Asia%2FKolkata`;
 
   const iframe = document.createElement("iframe");
   iframe.style.width = "100%";

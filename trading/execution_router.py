@@ -47,12 +47,22 @@ def extract_underlying(sym: str) -> str:
     if not sym:
         return ""
     s = str(sym).upper().strip()
-    for prefix in ("NSE:", "BSE:", "MCX:"):
+    for prefix in ("NSE:", "BSE:", "MCX:", "OPTIDX", "OPTSTK"):
         if s.startswith(prefix):
             s = s[len(prefix):]
     for suffix in ("-EQ", "-INDEX", ".NS"):
         if s.endswith(suffix):
             s = s[:-len(suffix)]
+    if "BANKNIFTY" in s:
+        return "BANKNIFTY"
+    if "FINNIFTY" in s:
+        return "FINNIFTY"
+    if "MIDCPNIFTY" in s:
+        return "MIDCPNIFTY"
+    if s == "NIFTY50" or s.startswith("NIFTY50"):
+        return "NIFTY50"
+    if "NIFTY" in s and "BANK" not in s:
+        return "NIFTY"
     # Standard Indian option format: <TICKER><2-digit YY><Month/Week><Strike><CE|PE>
     m = re.match(r"^([A-Z&_-]+?)(\d{2}[A-Z0-9]+?\d+(?:CE|PE))$", s)
     if m:
@@ -180,9 +190,9 @@ class ExecutionRouter:
                 return (f"cost_floor_breached (round-trip friction {cost_ratio*100:.1f}% of risk "
                         f"exceeds limit {MAX_COST_RISK_RATIO*100:.1f}%)")
 
-        # 3. Trend gate check (router hard risk kernel — restricted to orb_ma200 strategies)
+        # 3. Trend gate check (router hard risk kernel — restricted to orb strategies)
         strat_id = str(signal.get("strategy_id", ""))
-        if strat_id.startswith("orb_ma200"):
+        if strat_id.startswith("orb_ma200") or strat_id.startswith("orb_multi_ma"):
             trend_state = signal.get("trend_state")
             if trend_state not in ("up", "down"):
                 return f"trend_gate_failed (trend state '{trend_state}' is not permitted)"
@@ -222,7 +232,7 @@ class ExecutionRouter:
                     return (f"symbol_already_open (active trade #{op.get('id')} already open on "
                             f"{candidate_und} [{op.get('symbol')}])")
 
-        # Re-entry cooldown: prevent immediate churning and re-entering the same stock after exit
+        # Re-entry cooldown: allow fast re-entry when high-conviction setup appears
         if REENTRY_COOLDOWN_MINUTES > 0:
             closed_today = getattr(self.ledger, "closed_trades_today", lambda: [])()
             for ct in closed_today:
@@ -231,12 +241,18 @@ class ExecutionRouter:
                     exit_ts = ct.get("exit_ts")
                     if exit_ts:
                         elapsed = time.time() - exit_ts
-                        cooldown_secs = REENTRY_COOLDOWN_MINUTES * 60
-                        if elapsed < cooldown_secs:
-                            rem_min = int((cooldown_secs - elapsed) / 60) + 1
+                        # If a strong setup is present, reduce cooldown to 60s for order settlement
+                        is_strong = (
+                            signal.get("conviction", 0) >= 7
+                            or bool(signal.get("is_breakout"))
+                            or signal.get("strategy_id") in ("manual_option_paper", "index_orb_option")
+                            or bool(signal.get("override_cooldown"))
+                        )
+                        effective_secs = 60.0 if is_strong else (REENTRY_COOLDOWN_MINUTES * 60)
+                        if elapsed < effective_secs:
+                            rem_sec = int(effective_secs - elapsed)
                             return (f"reentry_cooldown_active ({candidate_und} trade #{ct.get('id')} "
-                                    f"closed {int(elapsed / 60)}m ago; cooldown is {REENTRY_COOLDOWN_MINUTES}m, "
-                                    f"wait {rem_min}m)")
+                                    f"closed {int(elapsed)}s ago; wait {rem_sec}s for order settlement)")
 
         if len(open_positions) >= MAX_OPEN_POSITIONS:
             return f"max_open_positions ({len(open_positions)}/{MAX_OPEN_POSITIONS})"

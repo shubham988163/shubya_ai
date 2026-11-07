@@ -208,8 +208,25 @@ a{{display:inline-block;margin-top:20px;background:#238636;color:#fff;text-decor
 
 class Handler(BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
-        url = urlparse(self.path)
-        result = serve(url.path, parse_qs(url.query), include_root=True)
+        raw_path = self.path
+        while raw_path.startswith("//"):
+            raw_path = raw_path[1:]
+        if not raw_path.startswith("/"):
+            raw_path = "/" + raw_path
+        url = urlparse(raw_path)
+        path = url.path or "/"
+
+        if path == "/favicon.ico" or "favicon.ico" in self.path:
+            _ico = (
+                b'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">'
+                b'<rect width="100" height="100" rx="20" fill="#2F9FDB"/>'
+                b'<path d="M25 65 L45 45 L60 55 L80 30" stroke="#fff" '
+                b'stroke-width="8" fill="none" stroke-linecap="round" '
+                b'stroke-linejoin="round"/></svg>'
+            )
+            return self._send(200, "image/svg+xml", _ico)
+
+        result = serve(path, parse_qs(url.query), include_root=True)
         if result is None:
             return self._send(404, "text/plain", b"not found")
         self._send(*result)
@@ -256,6 +273,8 @@ class Handler(BaseHTTPRequestHandler):
 _PAGE_TEMPLATE = r"""<!doctype html>
 <html lang="en"><head>
 <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232F9FDB'/%3E%3Cpath d='M25 65 L45 45 L60 55 L80 30' stroke='%23fff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
+<link rel="alternate icon" href="/favicon.ico">
 <title>F&amp;O Long Scanner</title>
 <style>
 __THEME__

@@ -243,6 +243,7 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
     </div>
     <nav class="nav">
       <a href="/"{cur("dashboard")}>Dashboard</a>
+      <a href="/charts"{cur("charts")} style="color:#38bdf8;font-weight:700">📈 Indian Charts (TradingView)</a>
       <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700">🌐 Forex & Crypto (Delta)</a>
       <a href="/target"{cur("target")} style="color:#10b981;font-weight:700">🎯 15K → 1L Target</a>
       <a href="/#agents-desk" style="border-left:1px solid var(--line);color:var(--accent);font-weight:700">🤖 4 Agents Desk</a>
@@ -299,7 +300,7 @@ function niftyPanel(ix, nf){
     call.append(mk("span","chip", q.moneyness));
     call.append(mk("span","st", "OI " + (q.open_interest||0).toLocaleString("en-IN")));
 
-    const lotSize = q.lot_size || (titleName.includes("BANK") ? 30 : 75);
+    const lotSize = q.lot_size || (titleName.includes("BANK") ? 30 : 65);
     const buyBtn = mk("button", "btn sm go", "Paper Buy " + kind + " (Lot: " + lotSize + ")");
     buyBtn.style.marginLeft = "auto";
     buyBtn.onclick = async () => {
