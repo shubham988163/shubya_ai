@@ -434,6 +434,14 @@ __THEME__
   overflow-y: auto;
   box-shadow: 0 24px 70px rgba(0,0,0,0.85);
 }
+@media (max-width: 768px){
+  main{padding:10px 10px 40px !important}
+  .chart-station-header{flex-direction:column;align-items:stretch;gap:8px;padding:10px 12px}
+  .chart-station-header > div{width:100%;justify-content:space-between}
+  .tf-btn-group{width:100%;justify-content:space-between}
+  .tf-btn-group button{flex:1;text-align:center;padding:6px 4px}
+  .council-modal{max-width:98%;max-height:95vh;padding:12px}
+}
 </style>
 <script src="/static/lightweight-charts.js"></script>
 </head>

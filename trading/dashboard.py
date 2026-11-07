@@ -1144,13 +1144,58 @@ pre.report{white-space:pre-wrap;font:12.5px/1.6 ui-sans-serif,system-ui,sans-ser
 .modal-btn.manual{background:var(--accent);border-color:var(--accent);color:#fff}
 .modal-btn.cancel{background:var(--cell);border-color:var(--line);color:var(--ink)}
 
-/* Responsive Mobile */
-@media (max-width:768px){
-  .kpis{grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
-  .bn-hero{flex-direction:column;align-items:flex-start}
+/* Responsive Mobile & Android Termux Optimizations */
+@media (max-width: 768px){
+  .wrap{padding:0 10px 48px}
+  .kpis{grid-template-columns:repeat(2,1fr) !important;gap:8px !important;padding:8px !important}
+  .kpi-tile{padding:10px !important}
+  .kpi-label{font-size:9.5px !important}
+  .kpi-value{font-size:19px !important}
+  .kpi-subtext{font-size:9.5px !important}
+
+  /* Live Ticker row */
+  #liveTickerPanel{margin-top:10px !important}
+  #liveTickerItems{padding:8px 10px !important;gap:8px !important}
+
+  /* Forex Desk */
+  #forex-crypto-desk{margin-top:10px !important}
+  #forex-crypto-desk > div:first-child{flex-direction:column;align-items:stretch !important;gap:10px !important;padding:10px 12px !important}
+  #forex-crypto-desk > div:first-child > div:last-child{display:flex;flex-wrap:wrap;gap:6px !important;width:100%}
+  #forex-crypto-desk > div:first-child > div:last-child .btn,
+  #forex-crypto-desk > div:first-child > div:last-child .badge{flex:1 1 auto;text-align:center;justify-content:center}
+  #mainForexTickerRow{grid-template-columns:repeat(2,1fr) !important;gap:8px !important}
+  #mainForexSetupsGrid{grid-template-columns:1fr !important;gap:10px !important}
+
+  /* Buy Now / Scanner Card */
+  #buynow .body{padding:10px !important}
+  .bn-hero{flex-direction:column;align-items:flex-start;gap:8px}
+  .bn-sym{font-size:22px !important}
+  .bn-levels{grid-template-columns:repeat(2,1fr) !important;gap:1px !important}
+  .bn-hero-actions{display:grid !important;grid-template-columns:1fr 1fr;gap:6px !important;width:100%}
+  .bn-action-btn{padding:10px;font-size:12px}
+
+  /* 4 Agents Council Desk */
+  #agents-desk{margin-top:10px !important}
+  #agents-desk > div:first-child{flex-direction:column;align-items:stretch !important;gap:10px !important;padding:10px 12px !important}
+  #agents-desk > div:nth-child(2){padding:10px 12px !important;flex-direction:column !important;align-items:stretch !important;gap:8px !important}
+  #agents-desk > div:nth-child(2) > div{width:100%}
+  #councilSymSelect{width:100% !important;max-width:100% !important}
+  #councilSymCustom{flex:1;width:100% !important}
+  #btnRunCouncilDebate{width:100% !important;padding:10px 14px !important;font-size:12.5px !important;justify-content:center}
+  #agentsGrid{grid-template-columns:1fr !important;gap:10px !important;padding:10px !important}
+
+  /* Trade Cards & Modals */
   .trade-metrics{grid-template-columns:1fr 1fr}
-  #agentsGrid{grid-template-columns:1fr}
-  .modal-content{width:95%}
+  .modal-content{width:95% !important;padding:14px !important}
+
+  /* P&L Chart Container */
+  #chartwrap{overflow-x:hidden}
+}
+
+@media (max-width: 480px){
+  .kpi-value{font-size:16px !important}
+  .bn-hero-actions{grid-template-columns:1fr !important}
+  #mainForexTickerRow{grid-template-columns:1fr !important}
 }
 
 /* Analytics Tab */
@@ -2836,6 +2881,7 @@ function renderChart(d){
     tip.style.left=lx+"px"; tip.style.top=(Y(best.y)/H)*240-10+"px";
   };
   hover.addEventListener("pointermove",e=>show(e.clientX));
+  hover.addEventListener("pointerdown",e=>show(e.clientX));
   hover.addEventListener("pointerleave",()=>{tip.style.display="none";
     cross.setAttribute("visibility","hidden");dot.setAttribute("visibility","hidden");});
 }
@@ -3808,6 +3854,23 @@ __THEME__
   padding: 1px 6px;
   font-size: 9.5px;
   margin-left: 5px;
+}
+@media (max-width: 768px){
+  .target-hero{padding:14px 12px}
+  .target-hero > div:first-child{flex-direction:column !important;gap:10px !important}
+  .target-hero > div:first-child > div:last-child{text-align:left !important}
+  .target-bar-wrap{padding:12px 14px}
+  .milestones{font-size:9.5px}
+  .category-grid{grid-template-columns:repeat(2,1fr) !important;gap:8px !important}
+  .cat-card{padding:12px 10px}
+  .filter-bar{flex-direction:column;align-items:stretch;gap:8px}
+  .filter-tabs{width:100%;overflow-x:auto;display:flex}
+  .filter-btn{flex:1;text-align:center;padding:6px 8px}
+}
+@media (max-width: 480px){
+  .category-grid{grid-template-columns:1fr !important}
+  .milestones .milestone:nth-child(2),
+  .milestones .milestone:nth-child(4){display:none}
 }
 </style>
 </head>

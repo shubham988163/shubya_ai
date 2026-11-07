@@ -65,6 +65,18 @@ __THEME__
 .agent-title{font-size:11.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;gap:7px;color:var(--ink)}
 .news-item{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px;display:flex;flex-direction:column;gap:4px;transition:border-color .15s ease}
 .news-item:hover{border-color:var(--accent)}
+
+@media (max-width: 768px){
+  .forex-grid{grid-template-columns:repeat(2,1fr) !important;gap:8px !important}
+  .signals-container{grid-template-columns:1fr !important}
+  .agent-grid{grid-template-columns:1fr !important}
+  .council-modal{margin:10px auto;width:95%}
+  .status-box{flex-direction:column;align-items:stretch;gap:8px}
+}
+@media (max-width: 480px){
+  .forex-grid{grid-template-columns:1fr !important}
+  .levels-grid{grid-template-columns:repeat(2,1fr) !important}
+}
 </style>
 </head>
 <body>
