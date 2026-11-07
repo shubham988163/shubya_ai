@@ -65,26 +65,27 @@ body::before{content:"";position:fixed;inset:0;pointer-events:none;z-index:0;
 .scroll{overflow-x:auto}
 
 /* ---------- top bar ---------- */
-.top{position:sticky;top:0;z-index:20;margin:0 -18px;padding:10px 18px;
-  background:color-mix(in srgb,var(--bg-2) 92%,transparent);
+.top{position:sticky;top:0;z-index:50;margin:0 -18px;padding:8px 18px;
+  background:color-mix(in srgb,var(--bg-2) 95%,transparent);
   backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px);
   border-bottom:1px solid var(--line);
-  display:flex;align-items:center;gap:14px}
-.top-row{display:contents}
-.brand{display:flex;align-items:center;gap:10px;min-width:0;order:1}
+  display:flex;flex-direction:column;gap:8px}
+.top-bar{display:flex;align-items:center;justify-content:space-between;width:100%;gap:10px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0;flex-shrink:0}
 .mark{width:26px;height:26px;border-radius:7px;flex:none;display:grid;place-items:center;
   background:linear-gradient(145deg,var(--accent),#6366f1);color:#04070f;
   font-weight:800;font-size:11px;letter-spacing:-.5px}
-.brand h1{margin:0;font-size:13px;font-weight:700;letter-spacing:.10em;
+.brand-text h1{margin:0;font-size:13px;font-weight:700;letter-spacing:.08em;
   text-transform:uppercase;white-space:nowrap}
-.brand .win{color:var(--ink-3);font-size:11px;letter-spacing:.04em}
-.nav{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden;
-  background:var(--cell);order:2}
-.nav a{padding:6px 12px;font-size:11px;font-weight:600;letter-spacing:.07em;
-  text-transform:uppercase;color:var(--ink-3);text-decoration:none;white-space:nowrap}
+.brand-text .win{color:var(--ink-3);font-size:10.5px;letter-spacing:.04em}
+.top-actions{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}
+.nav{display:flex;align-items:center;border:1px solid var(--line);border-radius:8px;overflow:hidden;
+  background:var(--cell);width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;white-space:nowrap}
+.nav::-webkit-scrollbar{display:none}
+.nav a{padding:6px 12px;font-size:11px;font-weight:600;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--ink-3);text-decoration:none;white-space:nowrap;flex-shrink:0}
 .nav a+a{border-left:1px solid var(--line)}
 .nav a[aria-current=page]{background:var(--accent-soft);color:var(--accent)}
-.top-actions{display:inline-flex;align-items:center;gap:6px;margin-left:auto;order:3}
 .live{display:inline-flex;align-items:center;gap:7px;font-size:11px;color:var(--ink-2);
   letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}
 .led{width:7px;height:7px;border-radius:50%;background:var(--good);flex:none}
@@ -230,19 +231,20 @@ tbody tr:hover td{background:var(--cell)}
 @keyframes slideIn{from{opacity:0;transform:translateY(-12px) scale(0.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 
 /* ---------- Responsive Mobile & Tablet Optimization ---------- */
+.hide-mobile{display:inline}
 @media (max-width: 900px){
   html, body{overflow-x:hidden;width:100%;-webkit-text-size-adjust:100%}
   .wrap{padding:0 10px 48px;max-width:100%;overflow-x:hidden}
-  .top{margin:0 -10px;padding:8px 10px;flex-direction:column;align-items:stretch;gap:8px}
-  .top-row{display:flex;align-items:center;justify-content:space-between;width:100%;gap:8px;order:1}
-  .brand{gap:8px;min-width:0;order:unset}
-  .brand h1{font-size:12px;overflow:hidden;text-overflow:ellipsis}
-  .brand .win{font-size:10px}
-  .top-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:0;order:unset}
-  .top-actions .btn{padding:4px 7px;font-size:10.5px;white-space:nowrap;height:28px}
+  .top{margin:0 -10px;padding:8px 10px;flex-direction:column;align-items:stretch;gap:6px}
+  .top-bar{display:flex;align-items:center;justify-content:space-between;width:100%;gap:6px}
+  .brand{gap:6px;min-width:0;flex-shrink:1}
+  .brand-text h1{font-size:12px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:140px}
+  .brand-text .win{font-size:10px}
+  .top-actions{display:flex;align-items:center;gap:4px;flex-shrink:0;margin-left:0;flex-wrap:nowrap}
+  .top-actions .btn{padding:4px 6px;font-size:10px;white-space:nowrap;height:28px}
   #alertLabel{display:none}
   .nav{display:flex;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;
-    white-space:nowrap;gap:4px;padding:2px 0 4px;border:none;background:transparent;order:2}
+    white-space:nowrap;gap:4px;padding:2px 0 4px;border:none;background:transparent}
   .nav::-webkit-scrollbar{display:none}
   .nav a{padding:6px 11px;font-size:11px;border-radius:7px;border:1px solid var(--line);
     background:var(--cell);flex-shrink:0}
@@ -275,8 +277,19 @@ tbody tr:hover td{background:var(--cell)}
   .btn,select.btn{padding:5px 9px;font-size:10.5px}
   .seg button{padding:5px 8px;font-size:10px}
 }
+@media (max-width: 768px){
+  .hide-mobile{display:none !important}
+  .brand-text .win{display:none !important}
+  .brand-text h1{font-size:11px;max-width:115px}
+  .top-actions #deltaPill{display:none !important}
+  .top-actions .btn, .top-actions select.btn{padding:3px 6px;font-size:10px;height:26px}
+  .live{font-size:10px;gap:4px}
+  .live .led{width:6px;height:6px}
+}
 @media (max-width: 480px){
-  .brand .win{display:none}
+  .brand-text h1{font-size:10.5px;max-width:95px}
+  .top-actions{gap:3px}
+  .top-actions .btn, .top-actions select.btn{padding:3px 5px;font-size:9.5px;height:25px}
   .kpi .v,.kpi-value{font-size:16px !important}
   .kpi .v.hero{font-size:21px !important}
 }
@@ -288,17 +301,17 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
     def cur(name: str) -> str:
         return ' aria-current="page"' if name == active else ""
     return f"""  <header class="top">
-    <div class="top-row">
+    <div class="top-bar">
       <div class="brand">
         <div class="mark">F&amp;O</div>
-        <div>
+        <div class="brand-text">
           <h1>{title}</h1>
           <div class="win mono" id="{subtitle_id}">…</div>
         </div>
       </div>
       <div class="top-actions">
         <button class="btn" id="btnAlertToggle" title="Toggle Audio Chimes &amp; Desktop Alerts" onclick="window.ScannerAlerts &amp;&amp; window.ScannerAlerts.toggle()">
-          <span id="alertIcon">🔔</span> <span id="alertLabel">Alerts ON</span>
+          <span id="alertIcon">🔔</span><span class="hide-mobile" id="alertLabel"> Alerts ON</span>
         </button>
         <a id="deltaPill" class="btn" style="border-color:var(--warn);background:var(--warn-soft);color:var(--warn)" href="/forex">🌐 Delta…</a>
         <a id="fyersPill" class="btn" target="_blank" href="/api/fyers/login">Fyers…</a>
@@ -308,8 +321,8 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
     </div>
     <nav class="nav">
       <a href="/"{cur("dashboard")}>Dashboard</a>
-      <a href="/charts"{cur("charts")} style="color:#38bdf8;font-weight:700">📈 <span class="nav-lbl">Indian Charts</span><span class="nav-sub"> (TradingView)</span></a>
-      <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700">🌐 <span class="nav-lbl">Forex &amp; Crypto</span><span class="nav-sub"> (Delta)</span></a>
+      <a href="/charts"{cur("charts")} style="color:#38bdf8;font-weight:700">📈 <span class="nav-lbl">Indian Charts</span><span class="nav-sub hide-mobile"> (TradingView)</span></a>
+      <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700">🌐 <span class="nav-lbl">Forex &amp; Crypto</span><span class="nav-sub hide-mobile"> (Delta)</span></a>
       <a href="/target"{cur("target")} style="color:#10b981;font-weight:700">🎯 <span class="nav-lbl">15K → 1L Target</span></a>
       <a href="/#agents-desk" style="border-left:1px solid var(--line);color:var(--accent);font-weight:700">🤖 <span class="nav-lbl">4 Agents Desk</span></a>
       <a href="/fno"{cur("scanner")}>Scanner</a>
@@ -775,14 +788,15 @@ window.ScannerAlerts = (function(){
           p.style.borderColor = "var(--good)";
           p.style.background = "var(--good-soft)";
           p.style.color = "var(--good)";
-          p.textContent = "⚡ Fyers Live (" + ((st.profile && st.profile.name) ? st.profile.name : "Connected") + ")";
+          const uName = (st.profile && st.profile.name) ? st.profile.name : "Connected";
+          p.innerHTML = '⚡ Fyers<span class="hide-mobile"> (' + uName + ')</span>';
           p.href = "#";
           p.onclick = (e)=>{ e.preventDefault(); alert("Fyers API v3 is Connected and Streaming Real-Time Candles!"); };
         } else {
           p.style.borderColor = "var(--warn)";
           p.style.background = "var(--warn-soft)";
           p.style.color = "var(--warn)";
-          p.textContent = "🔑 Connect Fyers";
+          p.innerHTML = '🔑 <span class="hide-mobile">Connect </span>Fyers';
           p.href = st.auth_url || "http://localhost:3001/api/fyers/login";
           p.onclick = null;
         }
@@ -800,7 +814,8 @@ window.ScannerAlerts = (function(){
           p.style.background = "var(--good-soft)";
           p.style.color = "var(--good)";
           const balStr = (st.balance && st.balance > 0) ? (" ₹" + Number(st.balance).toLocaleString("en-IN")) : "";
-          p.textContent = "🌐 Delta (" + (st.mode ? st.mode.toUpperCase() : "LIVE") + balStr + ")";
+          const modeStr = st.mode ? st.mode.toUpperCase() : "LIVE";
+          p.innerHTML = '🌐 Delta<span class="hide-mobile"> (' + modeStr + balStr + ')</span>';
         }
       }
     }catch(e){}

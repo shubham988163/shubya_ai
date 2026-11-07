@@ -333,8 +333,8 @@ def get_indian_candles(symbol: str, tf: str = "5m") -> dict:
         return {"ok": False, "error": str(exc), "symbol": clean, "ticker": ticker, "candles": [], "volume": []}
 
 
-_TOPBAR_RIGHT_CHARTS = """<a href="/" class="btn" style="text-decoration:none">← Main Dashboard</a>
-    <div class="live"><span class="led"></span><span>NSE Live (TradingView)</span></div>"""
+_TOPBAR_RIGHT_CHARTS = """<a href="/" class="btn" style="text-decoration:none">← <span class="hide-mobile">Main </span>Dashboard</a>
+    <div class="live"><span class="led"></span><span><span class="hide-mobile">NSE </span>Live<span class="hide-mobile"> (TradingView)</span></span></div>"""
 
 INDIAN_CHARTS_PAGE_TEMPLATE = r"""<!doctype html>
 <html lang="en">

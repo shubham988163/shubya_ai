@@ -1190,6 +1190,9 @@ pre.report{white-space:pre-wrap;font:12.5px/1.6 ui-sans-serif,system-ui,sans-ser
 
   /* P&L Chart Container */
   #chartwrap{overflow-x:hidden}
+
+  /* Hide floating theme toggle on mobile to prevent blocking cards/buttons */
+  .theme-toggle{display:none !important}
 }
 
 @media (max-width: 480px){
@@ -2247,7 +2250,7 @@ async function load(){
     selDate = DATA.date;
     render();
     document.getElementById("refreshed").textContent =
-      "updated " + new Date().toLocaleTimeString("en-IN",{hour12:false});
+      new Date().toLocaleTimeString("en-IN",{hour12:false});
     document.getElementById("foot").textContent =
       "Paper trading — no live orders. This dashboard keeps only the last "
       + (DATA.retention_days || 5) + " trading sessions on disk; older trades, "
@@ -3677,7 +3680,7 @@ document.head.appendChild(style);
 
 
 _TOPBAR_RIGHT = """    <select class="btn" id="dateSel" aria-label="Trading session"></select>
-    <div class="live"><span class="led"></span><span id="refreshed">—</span></div>"""
+    <div class="live"><span class="led"></span><span class="hide-mobile">UPDATED </span><span id="refreshed">—</span></div>"""
 
 PAGE = (_PAGE_TEMPLATE
         .replace("__THEME__", ui_theme.CSS)
@@ -4322,7 +4325,7 @@ __THEMEJS__
 </html>
 """
 
-_TOPBAR_RIGHT_TARGET = """<a href="/" class="btn" style="text-decoration:none">← Main Dashboard</a>
+_TOPBAR_RIGHT_TARGET = """<a href="/" class="btn" style="text-decoration:none">← <span class="hide-mobile">Main </span>Dashboard</a>
     <div class="live"><span class="led"></span><span>Target Live</span></div>"""
 
 TARGET_PAGE = (_TARGET_PAGE_TEMPLATE

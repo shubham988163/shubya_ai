@@ -1768,8 +1768,8 @@ __THEMEJS__
 </html>
 """
 
-_TOPBAR_RIGHT = """<a href="/" class="btn" style="text-decoration:none">← NSE Equity Dashboard</a>
-    <div class="live"><span class="led" style="background:#f59e0b"></span><span>Delta 24/7 Live</span></div>"""
+_TOPBAR_RIGHT = """<a href="/" class="btn" style="text-decoration:none">← <span class="hide-mobile">NSE Equity </span>Dashboard</a>
+    <div class="live"><span class="led" style="background:#f59e0b"></span><span><span class="hide-mobile">Delta 24/7 </span>Live</span></div>"""
 
 FOREX_PAGE = (
     _FOREX_TEMPLATE
