@@ -63,9 +63,9 @@ SLOW_EMA = 21
 CANDLE_INTERVAL = "15m"
 SWING_LOOKBACK = 10
 RR_TARGET = 2.0
-# Account sizing: capital set to 15,000 INR.
-ACCOUNT_CAPITAL = 15_000.0
-RISK_PER_TRADE = 75.0           # INR risked per trade (0.5% of capital)
+# Account sizing: capital set to 27,000 INR.
+ACCOUNT_CAPITAL = 27_000.0
+RISK_PER_TRADE = 135.0           # INR risked per trade (0.5% of capital)
 POLL_SECONDS = 60
 SQUAREOFF_TIME = "15:15"
 MARKET_OPEN = "09:15"
@@ -80,9 +80,9 @@ AVWAP_VOL_MULT = 1.2
 
 # --- Risk kernel (hard limits — the AI agent can NEVER override these) ---
 # Scaled to accommodate stock lot-wise option trading (up to 2-3 standard lot trades):
-DAILY_LOSS_LIMIT = -2500.0      # INR; hard stop for the day (allows 2-3 standard stock lot losses)
-DAILY_PROFIT_TARGET = 3_000.0   # INR; stop opening new trades once hit for the day
-MAX_POSITION_VALUE = 3_000.0    # INR per position (20% of capital)
+DAILY_LOSS_LIMIT = -2700.0      # INR; hard stop for the day (10% of 27k capital)
+DAILY_PROFIT_TARGET = 3_500.0   # INR; stop opening new trades once hit for the day
+MAX_POSITION_VALUE = 5_400.0    # INR per position (20% of capital for equity shares)
 MAX_OPEN_POSITIONS = 5          # portfolio cap (max 100% of capital deployed)
 MAX_ORDERS_PER_SEC = 8
 
@@ -231,8 +231,8 @@ STOCK_LOT_SIZES: dict[str, int] = {
 }
 
 DEFAULT_STOCK_OPTION_LOT = 250
-MAX_OPTION_POSITION_VALUE = 25_000.0  # INR; hard cap per option trade (strictly blocks oversized contracts)
-MAX_OPTION_RISK_PER_TRADE = 1250.0    # INR; max risk per option trade (allows 1-lot technical stop loss)
+MAX_OPTION_POSITION_VALUE = 27_000.0  # INR; hard cap per option trade (allows full 27k capital deployment)
+MAX_OPTION_RISK_PER_TRADE = 1350.0    # INR; max risk per option trade (5% of 27k capital)
 OPTION_STOP_LOSS_PCT = 0.10           # 10% maximum stop loss (cuts loss small instead of 30% collapse)
 MIN_OPTION_STOP_LOSS_PCT = 0.03       # 3% minimum stop loss distance (stops tighter than 3% get noise-stopped)
 OPTION_STRIKE_TYPE = "ITM"            # "ITM" (In-The-Money only) or "ATM"
