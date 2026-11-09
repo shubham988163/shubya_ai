@@ -37,6 +37,8 @@ FOREX_WATCHLIST = [
 POSITIONS_FILE = PROJECT_ROOT / "data" / "forex_positions.json"
 
 
+_DELTA_STATUS_CACHE: tuple[float, dict] | None = None
+
 class DeltaClient:
     """Client for Delta Exchange REST API v2."""
 
@@ -80,6 +82,11 @@ class DeltaClient:
 
     def status(self) -> dict[str, Any]:
         """Check API connection and wallet details."""
+        global _DELTA_STATUS_CACHE
+        now = time.time()
+        if _DELTA_STATUS_CACHE and (now - _DELTA_STATUS_CACHE[0]) < 8.0:
+            return dict(_DELTA_STATUS_CACHE[1])
+
         res: dict[str, Any] = {
             "connected": False,
             "mode": self.mode,
@@ -90,19 +97,20 @@ class DeltaClient:
         }
         try:
             # First test public market data access
-            t_resp = self.session.get(f"{self.base_url}/v2/tickers/BTCUSD", timeout=5)
+            t_resp = self.session.get(f"{self.base_url}/v2/tickers/BTCUSD", timeout=2.5)
             if t_resp.status_code == 200:
                 res["connected"] = True
                 res["message"] = "Market Data Online (Live Ticks Active)"
             else:
                 res["message"] = f"Public endpoint returned status {t_resp.status_code}"
+                _DELTA_STATUS_CACHE = (now, res)
                 return res
 
             # Next test authenticated wallet endpoint if credentials exist
             if self.api_key and self.api_secret:
                 path = "/v2/wallet/balances"
                 headers = self._auth_headers("GET", path)
-                w_resp = self.session.get(f"{self.base_url}{path}", headers=headers, timeout=5)
+                w_resp = self.session.get(f"{self.base_url}{path}", headers=headers, timeout=2.5)
                 if w_resp.status_code == 200:
                     data = w_resp.json()
                     balances = data.get("result", [])
@@ -122,6 +130,9 @@ class DeltaClient:
                         res["message"] = f"Auth failed ({err_code or w_resp.status_code})"
         except Exception as e:
             res["message"] = f"Connection error: {e}"
+
+        _DELTA_STATUS_CACHE = (now, res)
+        return res
 
         return res
 

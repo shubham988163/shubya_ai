@@ -1998,7 +1998,9 @@ function createSparkline(container, values, color = '#38bdf8') {
 
 // Notification System (clean bottom-right toast stack, never covers topbar brand)
 const Notifications = {
+  activeMsgs: new Set(),
   show(msg, type = 'info', duration = 3000) {
+    if (this.activeMsgs.has(msg)) return; // Prevent duplicate toast flooding
     let container = document.getElementById('toastContainer');
     if (!container) {
       container = document.createElement('div');
@@ -2006,16 +2008,40 @@ const Notifications = {
       container.style.cssText = 'position:fixed;bottom:24px;right:24px;z-index:9999;display:flex;flex-direction:column;gap:8px;pointer-events:none;max-width:380px';
       document.body.appendChild(container);
     }
+    // Cap visible toasts to max 3 so they don't cover cards
+    while (container.children.length >= 3) {
+      const oldest = container.firstElementChild;
+      if (oldest.dataset && oldest.dataset.msg) this.activeMsgs.delete(oldest.dataset.msg);
+      oldest.remove();
+    }
+    this.activeMsgs.add(msg);
     const n = document.createElement('div');
     n.className = `alert-badge ${type}`;
     n.textContent = msg;
+    n.dataset.msg = msg;
     n.style.cssText = 'pointer-events:auto;box-shadow:0 8px 24px rgba(0,0,0,0.45);border-radius:8px;padding:8px 14px;font-size:12px;font-weight:600;letter-spacing:0;text-transform:none;transition:all .25s ease;animation:slideIn .2s;background:var(--card);border:1px solid var(--line-2)';
     container.appendChild(n);
     setTimeout(() => {
-      n.style.opacity = '0';
-      n.style.transform = 'translateY(10px)';
-      setTimeout(() => n.remove(), 250);
+      this.dismiss(n, msg);
     }, duration);
+  },
+  dismiss(el, msg) {
+    if (msg) this.activeMsgs.delete(msg);
+    if (!el || !el.parentNode) return;
+    el.style.opacity = '0';
+    el.style.transform = 'translateY(10px)';
+    setTimeout(() => {
+      if (el.parentNode) el.remove();
+    }, 250);
+  },
+  clearCategory(keyword) {
+    const container = document.getElementById('toastContainer');
+    if (!container) return;
+    container.querySelectorAll('.alert-badge').forEach(n => {
+      if (n.textContent && n.textContent.includes(keyword)) {
+        this.dismiss(n, n.dataset ? n.dataset.msg : null);
+      }
+    });
   }
 };
 
@@ -3389,17 +3415,22 @@ document.addEventListener('DOMContentLoaded', () => {
   const origFetch = window.fetch;
   let failureCount = {};
   window.fetch = async function(...args) {
+    const urlStr = typeof args[0] === 'string' ? args[0] : (args[0] && args[0].url) || '';
     try {
       const res = await origFetch.apply(this, args);
       if(!res.ok) throw new Error(res.statusText);
-      failureCount[args[0]] = 0;
+      if (failureCount[urlStr]) {
+        failureCount[urlStr] = 0;
+        Notifications.clearCategory("Connection issue");
+      }
       return res;
     } catch(e) {
-      failureCount[args[0]] = (failureCount[args[0]] || 0) + 1;
-      if(failureCount[args[0]] <= 3) {
-        console.warn(`API call failed (attempt ${failureCount[args[0]]}): ${args[0]}`);
+      failureCount[urlStr] = (failureCount[urlStr] || 0) + 1;
+      if(failureCount[urlStr] <= 3) {
+        console.warn(`API call failed (attempt ${failureCount[urlStr]}): ${urlStr}`);
       } else {
-        Notifications.show(`Connection issue: ${args[0]}`, 'warning', 5000);
+        const shortUrl = urlStr.split('?')[0];
+        Notifications.show(`Connection issue: ${shortUrl}`, 'warning', 4000);
       }
       throw e;
     }
