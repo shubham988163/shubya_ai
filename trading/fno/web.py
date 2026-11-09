@@ -181,7 +181,31 @@ def serve(path: str, query: dict | None = None, *,
     if path == "/api/fyers/login":
         from trading.fno.fyers import get_auth_link
         auth_link = get_auth_link()
-        html = f"""<!doctype html><html><head><meta http-equiv="refresh" content="0; url={auth_link}"></head><body>Redirecting to Fyers login...</body></html>"""
+        html = f"""<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Redirecting to Fyers Login...</title>
+  <meta http-equiv="refresh" content="0; url={auth_link}">
+  <style>
+    body{{background:#0d1117;color:#e6edf3;font-family:system-ui,-apple-system,sans-serif;display:flex;justify-content:center;align-items:center;min-height:100vh;margin:0;padding:20px;box-sizing:border-box;}}
+    .card{{background:#161b22;border:1px solid #30363d;border-radius:12px;padding:32px;text-align:center;max-width:440px;box-shadow:0 8px 24px rgba(0,0,0,0.5);}}
+    h2{{color:#38bdf8;margin-top:0;font-size:20px;}}
+    p{{color:#8b949e;font-size:13px;line-height:1.6;margin:12px 0 24px;}}
+    .btn{{display:inline-block;background:#238636;color:#fff;text-decoration:none;padding:12px 24px;border-radius:8px;font-weight:700;font-size:14px;box-shadow:0 4px 12px rgba(35,134,54,0.3);}}
+    .btn:hover{{background:#2ea043;}}
+  </style>
+  <script>window.location.replace({json.dumps(auth_link)});</script>
+</head>
+<body>
+  <div class="card">
+    <h2>⚡ Connect Fyers API v3</h2>
+    <p>Redirecting to Fyers secure login... If your browser does not redirect automatically, click the button below:</p>
+    <a href="{auth_link}" class="btn">Click Here to Login with Fyers &rarr;</a>
+  </div>
+</body>
+</html>"""
         return 200, "text/html; charset=utf-8", html.encode()
     if path == "/api/fyers/callback":
         from trading.fno.fyers import exchange_token

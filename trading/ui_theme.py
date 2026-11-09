@@ -797,7 +797,7 @@ window.ScannerAlerts = (function(){
           p.style.background = "var(--warn-soft)";
           p.style.color = "var(--warn)";
           p.innerHTML = '🔑 <span class="hide-mobile">Connect </span>Fyers';
-          p.href = st.auth_url || "http://localhost:3001/api/fyers/login";
+          p.href = st.auth_url || "/api/fyers/login";
           p.onclick = null;
         }
       }
