@@ -686,6 +686,27 @@ def _background_position_exit_monitor():
         time.sleep(1.5)
 
 
+def _background_forex_autotrader():
+    """Continuous 24/7 Forex & Crypto auto-trader daemon for Delta Exchange.
+    Runs every 30 seconds to evaluate multi-strategy confluence setups, manage
+    trailing stops, and autonomously execute high-conviction paper/live trades."""
+    time.sleep(5)  # Allow dashboard server to bind port first
+    try:
+        from trading.forex_trader import ForexAutoTrader
+        trader = ForexAutoTrader()
+    except Exception as exc:
+        logger.error(f"Failed to initialize ForexAutoTrader daemon: {exc}")
+        return
+
+    while True:
+        try:
+            if trader.is_enabled:
+                trader.run_pass()
+        except Exception as exc:
+            logger.debug(f"Forex auto-trader background cycle error: {exc}")
+        time.sleep(30)
+
+
 def get_data(date: str | None) -> dict:
     ledger = Ledger()
     conn = sqlite3.connect(str(DB_PATH))
@@ -4582,6 +4603,8 @@ def main(argv: list[str] | None = None):
     fno_web.CACHE.start()
     t_monitor = threading.Thread(target=_background_position_exit_monitor, daemon=True, name="PositionExitMonitor")
     t_monitor.start()
+    t_forex = threading.Thread(target=_background_forex_autotrader, daemon=True, name="ForexAutoTrader")
+    t_forex.start()
     server = fno_web._bind(args.port, Handler, "the dashboard")
     if server is None:
         return 1
