@@ -745,6 +745,20 @@ def get_data(date: str | None) -> dict:
     est_open_charges = round(sum(t.get("est_charges", 0) for t in open_trades), 2)
     total_charges = round(realized_charges + est_open_charges, 2)
 
+    # Cumulative challenge stats (all days compounding from base capital towards 1 Lakh)
+    conn_cum = sqlite3.connect(str(DB_PATH))
+    conn_cum.row_factory = sqlite3.Row
+    all_closed_rows = [dict(r) for r in conn_cum.execute("SELECT pnl, charges FROM trades WHERE status = 'closed'").fetchall()]
+    conn_cum.close()
+    cum_realized_pnl = round(sum(float(r.get("pnl") or 0.0) for r in all_closed_rows), 2)
+    cum_charges = round(sum(float(r.get("charges") or 0.0) for r in all_closed_rows), 2)
+
+    from trading.config import ACCOUNT_CAPITAL
+    challenge_base = float(ACCOUNT_CAPITAL)
+    challenge_target = 100000.0
+    challenge_current = round(challenge_base + cum_realized_pnl + unrealized_pnl, 2)
+    challenge_prog_pct = max(0.0, min(100.0, round(((challenge_current - challenge_base) / (challenge_target - challenge_base)) * 100, 2)))
+
     stats = {
         "net_pnl": total_net_pnl,
         "realized_pnl": realized_pnl,
@@ -755,6 +769,11 @@ def get_data(date: str | None) -> dict:
         "charges": realized_charges,
         "est_open_charges": est_open_charges,
         "total_charges": total_charges,
+        "challenge_base_capital": challenge_base,
+        "challenge_current_capital": challenge_current,
+        "challenge_progress_pct": challenge_prog_pct,
+        "cumulative_realized_pnl": cum_realized_pnl,
+        "cumulative_charges": cum_charges,
         "rejections_today": sum(1 for r in rejections
                                 if date and __import__("datetime").datetime
                                 .fromtimestamp(r["ts"]).strftime("%Y-%m-%d") == date),
@@ -845,8 +864,9 @@ def classify_instrument(symbol: str) -> dict:
         }
 
 
-def get_target_data(from_today: bool = True, start_date: str | None = None) -> dict:
-    starting_capital = 15000.0
+def get_target_data(from_today: bool = False, start_date: str | None = None) -> dict:
+    from trading.config import ACCOUNT_CAPITAL
+    starting_capital = float(ACCOUNT_CAPITAL)
     target_capital = 100000.0
 
     today = datetime.now(IST).strftime("%Y-%m-%d")
@@ -854,15 +874,18 @@ def get_target_data(from_today: bool = True, start_date: str | None = None) -> d
 
     conn = sqlite3.connect(str(DB_PATH))
     conn.row_factory = sqlite3.Row
+    all_trades_ledger = [dict(r) for r in conn.execute(
+        "SELECT * FROM trades ORDER BY ts DESC"
+    ).fetchall()]
     if effective_start:
         all_raw_trades = [dict(r) for r in conn.execute(
             "SELECT * FROM trades WHERE date >= ? ORDER BY ts DESC", (effective_start,)
         ).fetchall()]
     else:
-        all_raw_trades = [dict(r) for r in conn.execute(
-            "SELECT * FROM trades ORDER BY ts DESC"
-        ).fetchall()]
+        all_raw_trades = all_trades_ledger
     conn.close()
+
+    cum_all_realized = round(sum(float(t.get("pnl") or 0.0) for t in all_trades_ledger if t.get("status") == "closed"), 2)
 
     open_trades = [t for t in all_raw_trades if t.get("status") == "open"]
     ltp_map = {}
@@ -940,10 +963,14 @@ def get_target_data(from_today: bool = True, start_date: str | None = None) -> d
         c["win_rate"] = round((c["wins"] / c["closed"] * 100), 1) if c["closed"] > 0 else None
 
     total_net_pnl = round(total_realized + total_unrealized, 2)
-    current_capital = round(starting_capital + total_net_pnl, 2)
+    if from_today:
+        current_capital = round(starting_capital + cum_all_realized + total_unrealized, 2)
+        growth_pct = round(((current_capital - starting_capital) / starting_capital) * 100, 2)
+    else:
+        current_capital = round(starting_capital + total_net_pnl, 2)
+        growth_pct = round((total_net_pnl / starting_capital) * 100, 2)
     progress_pct = max(0.0, min(100.0, round(((current_capital - starting_capital) / (target_capital - starting_capital)) * 100, 2)))
     remaining = max(0.0, round(target_capital - current_capital, 2))
-    growth_pct = round((total_net_pnl / starting_capital) * 100, 2)
 
     closed_all = [t for t in enriched_trades if t.get("status") == "closed"]
     wins_all = [t for t in closed_all if (t.get("pnl") or 0) > 0]
@@ -2402,13 +2429,13 @@ function renderTiles(d){
     delta: s.rejections_today > 0 ? 'Risk/Rate limit hit' : 'All signals approved'
   });
 
-  const startingCap = 15000;
+  const startingCap = s.challenge_base_capital || 27000;
   const targetCap = 100000;
-  const curCap = startingCap + net;
-  const progPct = Math.max(0, Math.min(100, ((curCap - startingCap) / (targetCap - startingCap) * 100))).toFixed(1);
-  mk("🎯 15K → 1L Target", `₹${fmt(curCap)}`, {
+  const curCap = s.challenge_current_capital !== undefined ? s.challenge_current_capital : (startingCap + (s.cumulative_realized_pnl || 0) + (s.unrealized_pnl || 0));
+  const progPct = s.challenge_progress_pct !== undefined ? s.challenge_progress_pct : Math.max(0, Math.min(100, ((curCap - startingCap) / (targetCap - startingCap) * 100))).toFixed(1);
+  mk("🎯 27K → 1L Target", `₹${fmt(curCap)}`, {
     hero: true,
-    dir: net>=0?"up":"down",
+    dir: curCap >= startingCap ? "up" : "down",
     trend: {pct: progPct},
     delta: `<strong>${progPct}% of target</strong> · <a href="/target" style="color:#10b981;font-weight:700;text-decoration:none">View breakdown →</a>`,
     deltaHtml: true,
@@ -3917,17 +3944,17 @@ __TOPBAR__
     <div>
       <div style="display:flex;align-items:center;gap:10px">
         <span style="font-size:24px">🎯</span>
-        <h1 style="margin:0;font-size:20px;font-weight:800;letter-spacing:0.02em;color:var(--ink)">15K → 1 Lakh Capital Challenge</h1>
+        <h1 style="margin:0;font-size:20px;font-weight:800;letter-spacing:0.02em;color:var(--ink)">27K → 1 Lakh Capital Challenge</h1>
         <span class="badge sm bull" style="font-size:10px">Live Portfolio Tracking</span>
       </div>
       <p style="margin:6px 0 0;font-size:12.5px;color:var(--ink-2);max-width:700px">
-        Disciplined capital scaling from ₹15,000 to ₹1,00,000 with real-time risk control, dynamic trailing stops, and multi-asset execution across Stocks, Stock Options, Nifty & Bank Nifty.
+        Disciplined day-by-day capital compounding from ₹27,000 to ₹1,00,000 with real-time risk control, dynamic trailing stops, and multi-asset execution across Stocks, Stock Options, Nifty &amp; Bank Nifty.
       </p>
     </div>
     <div style="text-align:right">
       <div style="font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:0.06em">Target Milestone</div>
       <div style="font-size:26px;font-weight:800;color:var(--accent);font-family:ui-monospace,monospace">₹1,00,000</div>
-      <div style="font-size:11px;color:#10b981;font-weight:600">Base Capital: ₹15,000 (Goal: +566.7% Return)</div>
+      <div style="font-size:11px;color:#10b981;font-weight:600">Base Capital: ₹27,000 (Goal: +270.4% Return)</div>
     </div>
   </div>
 
@@ -3938,17 +3965,17 @@ __TOPBAR__
         <span id="targetProgressPctBadge" class="badge sm bull" style="font-size:10px">0.0%</span>
       </div>
       <div style="font-size:11.5px;color:var(--ink-2);font-family:ui-monospace,monospace">
-        Current Capital: <b id="targetCurrentEquityText" style="color:var(--ink)">₹15,000</b> · Needed to 1L: <b id="targetRemainingText" style="color:var(--ink-2)">₹85,000</b>
+        Current Capital: <b id="targetCurrentEquityText" style="color:var(--ink)">₹27,000</b> · Needed to 1L: <b id="targetRemainingText" style="color:var(--ink-2)">₹73,000</b>
       </div>
     </div>
     <div class="progress-track">
       <div id="targetProgressBar" class="progress-fill" style="width: 0%"></div>
     </div>
     <div class="milestones">
-      <div class="milestone active" id="m15k"><span>Start</span><b>₹15,000</b></div>
-      <div class="milestone" id="m25k"><span>Milestone 1</span><b>₹25,000</b></div>
-      <div class="milestone" id="m50k"><span>Halfway</span><b>₹50,000</b></div>
-      <div class="milestone" id="m75k"><span>Milestone 3</span><b>₹75,000</b></div>
+      <div class="milestone active" id="m27k"><span>Start</span><b>₹27,000</b></div>
+      <div class="milestone" id="m45k"><span>Milestone 1</span><b>₹45,000</b></div>
+      <div class="milestone" id="m65k"><span>Halfway</span><b>₹65,000</b></div>
+      <div class="milestone" id="m85k"><span>Milestone 3</span><b>₹85,000</b></div>
       <div class="milestone" id="m100k" style="color:var(--accent)"><span>Target Goal</span><b>₹1,00,000</b></div>
     </div>
   </div>
@@ -3957,8 +3984,8 @@ __TOPBAR__
 <div class="kpis" style="margin-top:16px">
   <div class="kpi">
     <div class="k">Current Capital</div>
-    <div id="kpiCurrentCapital" class="v mono hero up">₹15,000</div>
-    <div id="kpiCapitalDelta" class="f">Base ₹15,000</div>
+    <div id="kpiCurrentCapital" class="v mono hero up">₹27,000</div>
+    <div id="kpiCapitalDelta" class="f">Base ₹27,000</div>
   </div>
   <div class="kpi">
     <div class="k">Total Net P&L (All Trades)</div>
@@ -3994,8 +4021,8 @@ __TOPBAR__
 <div class="filter-bar">
   <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
     <div class="filter-tabs" id="scopeFilterTabs">
-      <button class="filter-btn active" data-scope="today">⚡ Challenge (Today 13 Oct)</button>
-      <button class="filter-btn" data-scope="all">Include Past History</button>
+      <button class="filter-btn active" data-scope="all">🚀 Full Challenge (Day-by-Day)</button>
+      <button class="filter-btn" data-scope="today">⚡ Today's Session</button>
     </div>
     <div class="filter-tabs" id="categoryFilterTabs">
       <button class="filter-btn active" data-cat="all">All Instruments <span class="trade-count-badge" id="badgeAllCount">0</span></button>
@@ -4052,7 +4079,7 @@ __TOPBAR__
 
 <script>
 let TARGET_DATA = null;
-let SELECTED_SCOPE = "today";
+let SELECTED_SCOPE = "all";
 let SELECTED_CATEGORY = "all";
 let SELECTED_STATUS = "all";
 
@@ -4121,12 +4148,12 @@ function renderProgress(d) {
   if (remText) remText.textContent = "₹" + fmt(remaining);
 
   // Update milestone active styling
-  const m25 = document.getElementById("m25k");
-  if (m25) m25.classList.toggle("active", current >= 25000);
-  const m50 = document.getElementById("m50k");
-  if (m50) m50.classList.toggle("active", current >= 50000);
-  const m75 = document.getElementById("m75k");
-  if (m75) m75.classList.toggle("active", current >= 75000);
+  const m45 = document.getElementById("m45k");
+  if (m45) m45.classList.toggle("active", current >= 45000);
+  const m65 = document.getElementById("m65k");
+  if (m65) m65.classList.toggle("active", current >= 65000);
+  const m85 = document.getElementById("m85k");
+  if (m85) m85.classList.toggle("active", current >= 85000);
   const m100 = document.getElementById("m100k");
   if (m100) m100.classList.toggle("active", current >= 100000);
 
@@ -4140,7 +4167,8 @@ function renderProgress(d) {
   const kpiDelta = document.getElementById("kpiCapitalDelta");
   if (kpiDelta) {
     const diff = current - start;
-    kpiDelta.innerHTML = (diff >= 0 ? "▲ +₹" : "▼ -₹") + fmt(Math.abs(diff)) + " (" + (d.growth_pct >= 0 ? "+" : "") + d.growth_pct.toFixed(1) + "%) vs ₹15K base";
+    const baseLabel = fmt(start, 0);
+    kpiDelta.innerHTML = (diff >= 0 ? "▲ +₹" : "▼ -₹") + fmt(Math.abs(diff)) + " (" + (d.growth_pct >= 0 ? "+" : "") + d.growth_pct.toFixed(1) + "%) vs ₹" + baseLabel + " base";
     kpiDelta.style.color = diff >= 0 ? "var(--up)" : "var(--down)";
   }
 
@@ -4361,7 +4389,7 @@ _TOPBAR_RIGHT_TARGET = """<a href="/" class="btn" style="text-decoration:none">�
 
 TARGET_PAGE = (_TARGET_PAGE_TEMPLATE
                .replace("__THEME__", ui_theme.CSS)
-               .replace("__TOPBAR__", ui_theme.topbar("🎯 15K → 1L Target Journey", "target",
+               .replace("__TOPBAR__", ui_theme.topbar("🎯 27K → 1L Target Journey", "target",
                                                       _TOPBAR_RIGHT_TARGET))
                .replace("__THEMEJS__", ui_theme.THEME_JS))
 
@@ -4445,8 +4473,8 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(*fno)
         if path in ("/api/target-data", "/api/target"):
             q = parse_qs(url.query)
-            scope = q.get("scope", ["today"])[0]
-            from_today = (scope != "all" and q.get("all", ["0"])[0] != "1")
+            scope = q.get("scope", ["all"])[0]
+            from_today = (scope == "today")
             body = json.dumps(get_target_data(from_today=from_today), default=str).encode()
             self._send(200, "application/json", body)
         elif path in ("/target", "/goal", "/challenge"):

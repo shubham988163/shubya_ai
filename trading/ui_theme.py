@@ -323,7 +323,7 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
       <a href="/"{cur("dashboard")}>Dashboard</a>
       <a href="/charts"{cur("charts")} style="color:#38bdf8;font-weight:700">📈 <span class="nav-lbl">Indian Charts</span><span class="nav-sub hide-mobile"> (TradingView)</span></a>
       <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700">🌐 <span class="nav-lbl">Forex &amp; Crypto</span><span class="nav-sub hide-mobile"> (Delta)</span></a>
-      <a href="/target"{cur("target")} style="color:#10b981;font-weight:700">🎯 <span class="nav-lbl">15K → 1L Target</span></a>
+      <a href="/target"{cur("target")} style="color:#10b981;font-weight:700">🎯 <span class="nav-lbl">27K → 1L Target</span></a>
       <a href="/#agents-desk" style="border-left:1px solid var(--line);color:var(--accent);font-weight:700">🤖 <span class="nav-lbl">4 Agents Desk</span></a>
       <a href="/fno"{cur("scanner")}>Scanner</a>
     </nav>
