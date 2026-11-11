@@ -299,8 +299,9 @@ def select_option_for_underlying(
             ))
 
     if not quotes:
-        spot = spot or 1000.0
-        quotes = _build_synthetic_quotes(symbol, spot, now)
+        # Refuse to trade options on stocks that have no active F&O option chain (e.g. non-F&O cash stocks)
+        print(f"[-] {symbol} has no active option chain on Fyers. Refusing to synthesize phantom option.")
+        return None
 
     is_buy = side.upper() in ("BUY", "LONG", "CALL", "CE")
     target_kind = "Call" if is_buy else "Put"

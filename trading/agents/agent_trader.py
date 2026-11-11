@@ -1048,6 +1048,12 @@ def _evaluate_and_execute_index_plan(
         print(f"    SKIPPED: {reason}")
         return None
 
+    # Guard: Ensure the option contract is a valid exchange-tradable Fyers symbol
+    q = plan.option.quote
+    if not q.identifier.startswith("NSE:") or q.last_price <= 0:
+        print(f"    SKIPPED: {q.identifier} is not a valid Fyers-tradable contract format")
+        return None
+
     now_hm = datetime.now(IST).strftime("%H:%M")
     if not dry_run and not (MARKET_OPEN <= now_hm < SQUAREOFF_TIME):
         print(f"    SKIPPED: outside active market hours ({now_hm} IST; session is {MARKET_OPEN} - {SQUAREOFF_TIME})")
