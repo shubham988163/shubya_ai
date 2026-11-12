@@ -215,6 +215,10 @@ class LiveFeed:
         """The full BANK NIFTY option chain, as OptionQuote objects."""
         return self._options(lambda: self.nse.index_options("nifty_bank_opt"), "BANK NIFTY chain")
 
+    def sensex_option_board(self) -> list:
+        """The full SENSEX option chain, as OptionQuote objects."""
+        return self._options(lambda: [], "SENSEX chain")
+
     def option_board(self) -> list:
         """Most-active stock option contracts, as OptionQuote objects."""
         return self._options(lambda: self.nse.active_options(), "option board")

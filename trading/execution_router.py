@@ -57,6 +57,8 @@ def extract_underlying(sym: str) -> str:
             s = s[:-len(suffix)]
     if "BANKNIFTY" in s:
         return "BANKNIFTY"
+    if "SENSEX" in s:
+        return "SENSEX"
     if "FINNIFTY" in s:
         return "FINNIFTY"
     if "MIDCPNIFTY" in s:
@@ -290,8 +292,8 @@ class ExecutionRouter:
                     return (f"max_option_risk_exceeded (trade risk ₹{trade_risk:.2f} exceeds cap "
                             f"₹{MAX_OPTION_RISK_PER_TRADE:.2f})")
 
-            # Contract lot-size validation (specifically for index options e.g. NIFTY 75, BANKNIFTY 30)
-            if any(idx in sym for idx in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY")):
+            # Contract lot-size validation (specifically for index options e.g. NIFTY 65/75, BANKNIFTY 30, SENSEX 20)
+            if any(idx in sym for idx in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX")):
                 from trading.options_engine import get_lot_size
                 lot_size = get_lot_size(sym)
                 sig_qty = int(signal.get("qty", 1))

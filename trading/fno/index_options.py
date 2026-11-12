@@ -105,7 +105,7 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
     post = ind.after_opening_range(today)
 
     # Determine whether we evaluate a PUT breakdown or CALL breakout
-    is_put = (side == "PUT" or (side is None and market.classification in ("BEARISH", "STRONGLY BEARISH") and spot < or_low))
+    is_put = (side == "PUT" or (side is None and (spot < or_low or (market.classification in ("BEARISH", "STRONGLY BEARISH") and spot < (or_high + or_low) / 2))))
     direction = "PUT" if is_put else "CALL"
 
     if is_put:
@@ -130,8 +130,17 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
         plan.caveats.append("an index publishes no volume, so VWAP, relative volume "
                             "and breakout-volume confirmation are unavailable")
 
+        pullback = False
+        if not breakout and len(today) >= 8 and ema_f and ema_s:
+            if ema_f < ema_s and spot <= ema_f + 0.15 * atr and abs(spot - ema_f) <= 0.40 * atr and market.classification not in ("BULLISH", "STRONGLY BULLISH"):
+                pullback = True
+                breakout = True
+                holding = True
+                retested = True
+                plan.reasons.append(f"Mid-Day Trend Pullback: rejecting near 20 EMA ({ema_f:.1f}) with 20 < 50 EMA trend")
+
         if not breakout:
-            plan.rejections.append(f"{name} has not closed below its 09:15–09:30 low ({or_low:.2f})")
+            plan.rejections.append(f"{name} has not closed below its 09:15–09:30 low ({or_low:.2f}) and no active pullback setup")
             return plan
         if not holding:
             plan.rejections.append(f"the breakdown of {or_low:.2f} is not holding")
@@ -190,9 +199,18 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
                         "and breakout-volume confirmation are unavailable — this "
                         "is a five-factor read, not the stock scanner's eight")
 
+    pullback = False
+    if not breakout and len(today) >= 8 and ema_f and ema_s:
+        if ema_f > ema_s and spot >= ema_f - 0.15 * atr and abs(spot - ema_f) <= 0.40 * atr and market.classification not in ("BEARISH", "STRONGLY BEARISH"):
+            pullback = True
+            breakout = True
+            holding = True
+            retested = True
+            plan.reasons.append(f"Mid-Day Trend Pullback: bouncing off rising 20 EMA ({ema_f:.1f}) with 20 > 50 EMA trend")
+
     if not breakout:
         plan.rejections.append(
-            f"{name} has not closed above its 09:15–09:30 high ({or_high:.2f})")
+            f"{name} has not closed above its 09:15–09:30 high ({or_high:.2f}) and no active pullback setup")
         return plan
     if not holding:
         plan.rejections.append(f"the break of {or_high:.2f} is not holding")

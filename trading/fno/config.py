@@ -127,6 +127,7 @@ STRONGLY_BEARISH_PENALTY = 0.55  # multiplies the whole score
 
 NIFTY_TICKER = "^NSEI"
 BANKNIFTY_TICKER = "^NSEBANK"
+SENSEX_TICKER = "^BSESN"
 
 # --- sectors -------------------------------------------------------------
 # Sector strength comes from the live NSE sector index where one maps cleanly

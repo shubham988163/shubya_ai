@@ -259,5 +259,5 @@ def get_max_viable_option_premium(
     prem_from_risk = max_risk / (lot_size * max(0.01, sl_pct))
     prem_from_cap = max_pos_val / lot_size
     return round(min(prem_from_risk, prem_from_cap), 2)
-
+    
 

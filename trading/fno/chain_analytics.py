@@ -171,3 +171,80 @@ def render(read: ChainRead | None) -> str:
                  f"({read.support_oi:,.0f} OI)")
     L += [f"  ! {n}" for n in read.notes]
     return "\n".join(L)
+
+
+def generate_gamma_signal(
+    read: ChainRead | None,
+    board: list[OptionQuote],
+    market,
+    now: datetime,
+) -> object | None:
+    """Generate high-probability trade setups derived from real-time option chain positioning.
+
+    Detects:
+      1. Gamma Squeeze / Short-Covering: Spot breaking above Call OI wall with bullish PCR.
+      2. Gamma Flush / Long Liquidation: Spot breaking below Put OI wall with bearish PCR.
+      3. Put OI Support Wall Bounce: Spot testing major Put OI wall with holding action.
+    """
+    if read is None or not read.spot or not board:
+        return None
+
+    from trading.fno import options as opt_mod
+    from trading.fno.index_options import IndexPlan
+
+    spot = read.spot
+    pcr = read.pcr or 1.0
+    underlying = read.underlying
+
+    # 1. Short-Covering Gamma Squeeze (Call OI Wall Breakout)
+    if read.resistance_strike and spot >= read.resistance_strike and pcr >= 0.95:
+        stop = round(spot * 0.995, 2)
+        target1 = round(spot * 1.010, 2)
+        target2 = round(spot * 1.020, 2)
+        plan = IndexPlan(
+            spot=spot, or_high=read.resistance_strike, or_low=stop, atr=spot * 0.006,
+            ema_fast=None, ema_slow=None, day_high=spot, day_low=stop,
+            breakout=True, retested=True, holding=True, extended=False,
+            name=f"{underlying} Gamma Squeeze", index_symbol=underlying, direction="CALL",
+            stop=stop, target1=target1, target2=target2,
+        )
+        plan.reasons.append(f"Short-Covering Squeeze: spot {spot:.1f} broke above Call OI wall {read.resistance_strike:g} (PCR {pcr:.2f})")
+        plan.option = opt_mod.plan_call(underlying, board, spot=spot, target1=target1, target2=target2, stop=stop, now=now, today=now.date())
+        if plan.tradeable:
+            return plan
+
+    # 2. Long Liquidation Gamma Flush (Put OI Wall Breakdown)
+    if read.support_strike and spot <= read.support_strike and pcr <= 1.05:
+        stop = round(spot * 1.005, 2)
+        target1 = round(spot * 0.990, 2)
+        target2 = round(spot * 0.980, 2)
+        plan = IndexPlan(
+            spot=spot, or_high=stop, or_low=read.support_strike, atr=spot * 0.006,
+            ema_fast=None, ema_slow=None, day_high=stop, day_low=spot,
+            breakout=True, retested=True, holding=True, extended=False,
+            name=f"{underlying} Gamma Flush", index_symbol=underlying, direction="PUT",
+            stop=stop, target1=target1, target2=target2,
+        )
+        plan.reasons.append(f"Long Liquidation Flush: spot {spot:.1f} broke below Put OI wall {read.support_strike:g} (PCR {pcr:.2f})")
+        plan.option = opt_mod.plan_put(underlying, board, spot=spot, target1=target1, target2=target2, stop=stop, now=now, today=now.date())
+        if plan.tradeable:
+            return plan
+
+    # 3. Put OI Support Wall Bounce (Writers defending support)
+    if read.support_strike and pcr >= 1.25 and 0 <= (spot - read.support_strike) <= (spot * 0.003):
+        stop = round(read.support_strike * 0.997, 2)
+        target1 = round(spot + 2 * (spot - stop), 2)
+        target2 = round(spot + 3 * (spot - stop), 2)
+        plan = IndexPlan(
+            spot=spot, or_high=target1, or_low=read.support_strike, atr=spot * 0.006,
+            ema_fast=None, ema_slow=None, day_high=spot, day_low=read.support_strike,
+            breakout=True, retested=True, holding=True, extended=False,
+            name=f"{underlying} OI Wall Bounce", index_symbol=underlying, direction="CALL",
+            stop=stop, target1=target1, target2=target2,
+        )
+        plan.reasons.append(f"Support Wall Bounce: spot {spot:.1f} defending heavy Put OI wall {read.support_strike:g} with bullish PCR {pcr:.2f}")
+        plan.option = opt_mod.plan_call(underlying, board, spot=spot, target1=target1, target2=target2, stop=stop, now=now, today=now.date())
+        if plan.tradeable:
+            return plan
+
+    return None

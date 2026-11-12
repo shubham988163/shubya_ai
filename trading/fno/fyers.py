@@ -39,6 +39,7 @@ TIMEOUT = 15
 INDEX_SYMBOLS = {
     "^NSEI": "NSE:NIFTY50-INDEX",
     "^NSEBANK": "NSE:NIFTYBANK-INDEX",
+    "^BSESN": "BSE:SENSEX-INDEX",
 }
 
 _QUOTES_CACHE: dict[str, tuple[float, list[dict]]] = {}
@@ -638,6 +639,13 @@ class FyersFeed(LiveFeed):
             if data:
                 return self._fyers_to_option_quotes(data, "BANKNIFTY")
         return super().banknifty_option_board()
+
+    def sensex_option_board(self) -> list:
+        if self.connected:
+            data = self.client.option_chain("BSE:SENSEX-INDEX", strikecount=12)
+            if data:
+                return self._fyers_to_option_quotes(data, "SENSEX")
+        return super().sensex_option_board()
 
     def stock_option_board(self, symbol: str) -> list:
         if self.connected:

@@ -299,7 +299,7 @@ class Scanner:
             notes.append("Nothing could be graded this run — see the skip reasons "
                          "above. Outside market hours this is expected.")
 
-        index_plan = banknifty_plan = chain_read = piv = gap = None
+        index_plan = banknifty_plan = sensex_plan = gamma_signal = chain_read = piv = gap = None
         if data_ok and self.with_options:
             if hasattr(self.feed, "index_option_board"):
                 try:
@@ -314,6 +314,8 @@ class Scanner:
                             piv = pv_mod.from_candles(bars, day)
                             gap = pv_mod.gap(bars, day)
                     chain_read = ca_mod.analyse(chain, "NIFTY", self.now.date())
+                    if chain_read and chain:
+                        gamma_signal = ca_mod.generate_gamma_signal(chain_read, chain, market, self.now)
                 except Exception as exc:                    # noqa: BLE001
                     notes.append(f"NIFTY option read failed: {exc}")
 
@@ -323,11 +325,24 @@ class Scanner:
                               if hasattr(self.feed, "banknifty_option_board")
                               else getattr(self, "option_board", []))
                 bank_candles = self.feed.index_candles(C.BANKNIFTY_TICKER)
-                if bank_candles is not None:
+                if bank_candles is not None and bank_chain:
                     banknifty_plan = ix_mod.analyse(bank_candles.df, self.now, market, bank_chain,
                                                     index_symbol="BANKNIFTY", name="BANK NIFTY")
             except Exception as exc:                        # noqa: BLE001
                 notes.append(f"BANK NIFTY option read failed: {exc}")
+
+            # SENSEX option setup (BSE)
+            try:
+                sensex_chain = (self.feed.sensex_option_board()
+                                if hasattr(self.feed, "sensex_option_board")
+                                else [])
+                sensex_candles = (self.feed.index_candles(C.SENSEX_TICKER)
+                                  if hasattr(C, "SENSEX_TICKER") else None)
+                if sensex_candles is not None and sensex_chain:
+                    sensex_plan = ix_mod.analyse(sensex_candles.df, self.now, market, sensex_chain,
+                                                 index_symbol="SENSEX", name="SENSEX")
+            except Exception as exc:                        # noqa: BLE001
+                notes.append(f"SENSEX option read failed: {exc}")
 
         candidates.sort(key=lambda c: (c.tradeable, c.score, c.rel_strength),
                         reverse=True)
@@ -338,4 +353,5 @@ class Scanner:
                           candidates=candidates, considered=len(shortlist),
                           data_ok=data_ok, data_notes=notes,
                           index_plan=index_plan, banknifty_plan=banknifty_plan,
+                          sensex_plan=sensex_plan, gamma_signal=gamma_signal,
                           chain_read=chain_read, pivots=piv, gap=gap)

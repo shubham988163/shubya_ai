@@ -1069,7 +1069,7 @@ def _evaluate_and_execute_index_plan(
 
     # Guard: Ensure the option contract is a valid exchange-tradable Fyers symbol
     q = plan.option.quote
-    if not q.identifier.startswith("NSE:") or q.last_price <= 0:
+    if not (q.identifier.startswith("NSE:") or q.identifier.startswith("BSE:")) or q.last_price <= 0:
         print(f"    SKIPPED: {q.identifier} is not a valid Fyers-tradable contract format")
         return None
 
@@ -1165,7 +1165,12 @@ def _evaluate_and_execute_index_plan(
         "option_type": kind,
         "strike": q.strike,
         "expiry": q.expiry,
-        "strategy_id": "index_orb_option",
+        "strategy_id": (
+            "index_gamma_squeeze"
+            if "Gamma" in getattr(plan, "name", "") or "Bounce" in getattr(plan, "name", "")
+            else ("index_pullback_option" if "Pullback" in getattr(plan, "name", "") else "index_orb_option")
+        ),
+        "is_0dte": q.expires_today() if hasattr(q, "expires_today") else False,
         "regime": router.day_config.get("regime", "trending"),
     }
 
@@ -1176,11 +1181,12 @@ def _evaluate_and_execute_index_plan(
     trade_id = router.execute(signal)
     if trade_id is not None:
         if router.ledger:
+            reasons_text = "; ".join(plan.reasons) if plan.reasons else f"{sym} {plan.direction} index setup"
             router.ledger.save_agent_verdict(
                 trade_id,
                 "buy",
-                0.85,
-                [f"Index ORB Breakout: {sym} {plan.direction} 15-min range breakout"],
+                0.88,
+                [f"{plan.name}: {reasons_text}"],
             )
         print(f"    EXECUTED trade #{trade_id} | {opt_symbol} Qty: {qty} @ {price:.2f} | SL: {stop_loss:.2f} | Tgt: {target:.2f}")
         notify(
@@ -1318,6 +1324,26 @@ def scan_and_trade(
                 if bx_res:
                     results.append(bx_res)
                     if bx_res.get("executed"):
+                        executed_count += 1
+
+            # 3. SENSEX (BSE)
+            if executed_count < max_trades and getattr(res, "sensex_plan", None):
+                sx_res = _evaluate_and_execute_index_plan(
+                    res.sensex_plan, router, ledger, dry_run=dry_run
+                )
+                if sx_res:
+                    results.append(sx_res)
+                    if sx_res.get("executed"):
+                        executed_count += 1
+
+            # 4. OPTION CHAIN GAMMA SQUEEZE (Unwinding / Short-Covering Squeeze)
+            if executed_count < max_trades and getattr(res, "gamma_signal", None):
+                oi_res = _evaluate_and_execute_index_plan(
+                    res.gamma_signal, router, ledger, dry_run=dry_run
+                )
+                if oi_res:
+                    results.append(oi_res)
+                    if oi_res.get("executed"):
                         executed_count += 1
 
     # --- watchlist arm (unchanged) ---------------------------------------

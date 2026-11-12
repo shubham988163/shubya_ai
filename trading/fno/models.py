@@ -242,6 +242,8 @@ class ScanResult:
     # candidates, so it travels separately.
     index_plan: object | None = None
     banknifty_plan: object | None = None
+    sensex_plan: object | None = None
+    gamma_signal: object | None = None
     # Whole-chain positioning (PCR, max pain, OI walls) and yesterday's pivot
     # levels — context for every candidate rather than a per-stock reading.
     chain_read: object | None = None

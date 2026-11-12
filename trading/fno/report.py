@@ -267,6 +267,8 @@ def as_dict(res: ScanResult) -> dict:
         },
         "index_options": _index_plan(res.index_plan),
         "banknifty_options": _index_plan(getattr(res, "banknifty_plan", None)),
+        "sensex_options": _index_plan(getattr(res, "sensex_plan", None)),
+        "gamma_signal": _index_plan(getattr(res, "gamma_signal", None)),
         "chain": _chain_read(res.chain_read),
         "pivots": _pivots(res.pivots, res.gap),
         "picks": [_cand(c, res.when, i + 1) for i, c in enumerate(res.picks)],

@@ -872,6 +872,15 @@ def classify_instrument(symbol: str) -> dict:
                 "badge": "banknifty",
                 "tag": "Bank Nifty",
             }
+        elif "SENSEX" in s:
+            return {
+                "key": "sensex_option",
+                "label": "Sensex Option",
+                "icon": "🏛️",
+                "color": "#ec4899",
+                "badge": "sensex",
+                "tag": "BSE Sensex",
+            }
         elif "NIFTY" in s:
             return {
                 "key": "nifty_option",
@@ -935,6 +944,7 @@ def get_target_data(from_today: bool = False, start_date: str | None = None) -> 
         "stock_option": {"key": "stock_option", "label": "Stock Options (F&O)", "icon": "🎯", "color": "#34d399", "trades": 0, "closed": 0, "open": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "total_pnl": 0.0, "charges": 0.0},
         "nifty_option": {"key": "nifty_option", "label": "Nifty Options", "icon": "⚡", "color": "#38bdf8", "trades": 0, "closed": 0, "open": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "total_pnl": 0.0, "charges": 0.0},
         "banknifty_option": {"key": "banknifty_option", "label": "Bank Nifty Options", "icon": "🏦", "color": "#c084fc", "trades": 0, "closed": 0, "open": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "total_pnl": 0.0, "charges": 0.0},
+        "sensex_option": {"key": "sensex_option", "label": "Sensex Options (BSE)", "icon": "🏛️", "color": "#ec4899", "trades": 0, "closed": 0, "open": 0, "wins": 0, "losses": 0, "realized_pnl": 0.0, "unrealized_pnl": 0.0, "total_pnl": 0.0, "charges": 0.0},
     }
 
     enriched_trades = []
@@ -2207,9 +2217,13 @@ function renderNifty(st){
   if(!s) return;
   const ix = s.index_options || null;
   const bix = s.banknifty_options || null;
-  if(!ix && !bix && !s.chain && !s.pivots) return;
+  const six = s.sensex_options || null;
+  const gmx = s.gamma_signal || null;
+  if(!ix && !bix && !six && !gmx && !s.chain && !s.pivots) return;
   if(ix) wrap.append(niftyPanel(ix, v => fmt(v)));
   if(bix) wrap.append(niftyPanel(bix, v => fmt(v)));
+  if(six) wrap.append(niftyPanel(six, v => fmt(v)));
+  if(gmx) wrap.append(niftyPanel(gmx, v => fmt(v)));
   const ctx = contextPanel(s.chain, s.pivots, v => fmt(v));
   if(ctx) wrap.append(ctx);
 }
@@ -3919,6 +3933,7 @@ __THEME__
 .badge-stockopt { background: rgba(52, 211, 153, 0.12); color: #34d399; border: 1px solid rgba(52, 211, 153, 0.35); }
 .badge-nifty { background: rgba(56, 189, 248, 0.12); color: #38bdf8; border: 1px solid rgba(56, 189, 248, 0.35); }
 .badge-banknifty { background: rgba(192, 132, 252, 0.12); color: #c084fc; border: 1px solid rgba(192, 132, 252, 0.35); }
+.badge-sensex { background: rgba(236, 72, 153, 0.12); color: #ec4899; border: 1px solid rgba(236, 72, 153, 0.35); }
 .filter-bar {
   display: flex;
   align-items: center;
@@ -4075,6 +4090,7 @@ __TOPBAR__
       <button class="filter-btn" data-cat="stock_option">🎯 Stock Options <span class="trade-count-badge" id="badgeStockOptCount">0</span></button>
       <button class="filter-btn" data-cat="nifty_option">⚡ Nifty Options <span class="trade-count-badge" id="badgeNiftyCount">0</span></button>
       <button class="filter-btn" data-cat="banknifty_option">🏦 Bank Nifty Options <span class="trade-count-badge" id="badgeBankNiftyCount">0</span></button>
+      <button class="filter-btn" data-cat="sensex_option">🏛️ Sensex Options <span class="trade-count-badge" id="badgeSensexCount">0</span></button>
     </div>
   </div>
   <div class="filter-tabs" id="statusFilterTabs">
@@ -4261,7 +4277,7 @@ function renderCategoryCards(d) {
   if (!grid) return;
   grid.innerHTML = "";
 
-  const counts = { all: d.trades.length, stock: 0, stock_option: 0, nifty_option: 0, banknifty_option: 0 };
+  const counts = { all: d.trades.length, stock: 0, stock_option: 0, nifty_option: 0, banknifty_option: 0, sensex_option: 0 };
   d.trades.forEach(t => {
     if (counts[t.category] !== undefined) counts[t.category]++;
   });
@@ -4271,6 +4287,7 @@ function renderCategoryCards(d) {
   const bOpt = document.getElementById("badgeStockOptCount"); if (bOpt) bOpt.textContent = counts.stock_option;
   const bNif = document.getElementById("badgeNiftyCount"); if (bNif) bNif.textContent = counts.nifty_option;
   const bBnf = document.getElementById("badgeBankNiftyCount"); if (bBnf) bBnf.textContent = counts.banknifty_option;
+  const bSnx = document.getElementById("badgeSensexCount"); if (bSnx) bSnx.textContent = counts.sensex_option;
 
   (d.categories || []).forEach(cat => {
     const card = document.createElement("div");
@@ -4370,6 +4387,8 @@ function renderTradesTable() {
       catBadgeHtml = `<span class="cat-badge badge-nifty">⚡ Nifty Opt</span>`;
     } else if (t.category === "banknifty_option") {
       catBadgeHtml = `<span class="cat-badge badge-banknifty">🏦 Bank Nifty Opt</span>`;
+    } else if (t.category === "sensex_option") {
+      catBadgeHtml = `<span class="cat-badge badge-sensex">🏛️ Sensex Opt</span>`;
     }
 
     const sideBadge = t.side === "BUY" ?
