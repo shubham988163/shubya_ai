@@ -22,6 +22,8 @@ from trading.config import (
     MAX_OPEN_POSITIONS,
     MAX_ORDERS_PER_SEC,
     REENTRY_COOLDOWN_MINUTES,
+    LOSS_COOLDOWN_MINUTES,
+    MAX_LOSSES_PER_SYMBOL_DAY,
     SLIPPAGE_PCT,
     CHARGES_PCT_ROUND_TRIP,
     MAX_COST_RISK_RATIO,
@@ -232,27 +234,41 @@ class ExecutionRouter:
                     return (f"symbol_already_open (active trade #{op.get('id')} already open on "
                             f"{candidate_und} [{op.get('symbol')}])")
 
-        # Re-entry cooldown: allow fast re-entry when high-conviction setup appears
-        if REENTRY_COOLDOWN_MINUTES > 0:
-            closed_today = getattr(self.ledger, "closed_trades_today", lambda: [])()
-            for ct in closed_today:
-                ct_und = ct.get("underlying") or extract_underlying(ct.get("symbol", ""))
-                if candidate_und == ct_und or signal["symbol"] == ct.get("symbol"):
-                    exit_ts = ct.get("exit_ts")
-                    if exit_ts:
-                        elapsed = time.time() - exit_ts
-                        # If a strong setup is present, reduce cooldown to 60s for order settlement
-                        is_strong = (
-                            signal.get("conviction", 0) >= 7
-                            or bool(signal.get("is_breakout"))
-                            or signal.get("strategy_id") in ("manual_option_paper", "index_orb_option")
-                            or bool(signal.get("override_cooldown"))
-                        )
-                        effective_secs = 60.0 if is_strong else (REENTRY_COOLDOWN_MINUTES * 60)
-                        if elapsed < effective_secs:
-                            rem_sec = int(effective_secs - elapsed)
-                            return (f"reentry_cooldown_active ({candidate_und} trade #{ct.get('id')} "
-                                    f"closed {int(elapsed)}s ago; wait {rem_sec}s for order settlement)")
+        # Re-entry cooldown & loss lockout: protect against whipsaw & revenge trading
+        closed_today = getattr(self.ledger, "closed_trades_today", lambda: [])()
+        symbol_closed = [
+            ct for ct in closed_today
+            if candidate_und == (ct.get("underlying") or extract_underlying(ct.get("symbol", "")))
+            or signal["symbol"] == ct.get("symbol")
+        ]
+        if symbol_closed:
+            # 1. Loss count check: prevent repeated churn on same stock
+            loss_count = sum(1 for ct in symbol_closed if (ct.get("pnl") or 0) < 0)
+            if loss_count >= MAX_LOSSES_PER_SYMBOL_DAY and not signal.get("override_cooldown"):
+                return (f"symbol_loss_lockout ({candidate_und} has {loss_count} stop-outs today; "
+                        f"locked out to prevent chop/revenge trading)")
+
+            # 2. Re-entry cooldown check
+            last_ct = max(symbol_closed, key=lambda c: c.get("exit_ts") or 0)
+            exit_ts = last_ct.get("exit_ts")
+            if exit_ts:
+                elapsed = time.time() - exit_ts
+                last_pnl = float(last_ct.get("pnl") or 0.0)
+                
+                # If last trade on this symbol was a loss, enforce strict loss cooldown
+                if last_pnl < 0:
+                    required_secs = LOSS_COOLDOWN_MINUTES * 60.0
+                    cooldown_type = f"loss cooldown ({LOSS_COOLDOWN_MINUTES}m)"
+                else:
+                    required_secs = REENTRY_COOLDOWN_MINUTES * 60.0
+                    cooldown_type = f"re-entry cooldown ({REENTRY_COOLDOWN_MINUTES}m)"
+
+                if not signal.get("override_cooldown") and elapsed < required_secs:
+                    rem_sec = int(required_secs - elapsed)
+                    rem_min = int(rem_sec / 60) + 1
+                    return (f"reentry_cooldown_active ({candidate_und} trade #{last_ct.get('id')} "
+                            f"closed {int(elapsed/60)}m ago with P&L ₹{last_pnl:.2f}; "
+                            f"{cooldown_type} active, wait {rem_min}m)")
 
         if len(open_positions) >= MAX_OPEN_POSITIONS:
             return f"max_open_positions ({len(open_positions)}/{MAX_OPEN_POSITIONS})"

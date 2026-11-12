@@ -142,13 +142,13 @@ section{margin-top:14px}
   border:1px solid var(--line-2);background:var(--cell);color:var(--ink)}
 .badge .g{font-size:12px;line-height:1}
 .badge.sm{padding:3px 8px;font-size:10px}
-.badge.v-buy,.badge.ok,.badge.approve{border-color:var(--good);background:var(--good-soft)}
-.badge.v-buy .g,.badge.ok .g,.badge.approve .g{color:var(--good)}
-.badge.v-watch,.badge.caution{border-color:var(--warn);background:var(--warn-soft)}
-.badge.v-watch .g,.badge.caution .g{color:var(--warn)}
+.badge.v-buy,.badge.ok,.badge.approve,.badge.buy{border-color:var(--good);background:var(--good-soft)}
+.badge.v-buy .g,.badge.ok .g,.badge.approve .g,.badge.buy .g{color:var(--good)}
+.badge.v-watch,.badge.caution,.badge.hold{border-color:var(--warn);background:var(--warn-soft)}
+.badge.v-watch .g,.badge.caution .g,.badge.hold .g{color:var(--warn)}
 .badge.v-avoid .g{color:var(--ink-3)}
-.badge.veto,.badge.err{border-color:var(--bad);background:var(--bad-soft)}
-.badge.veto .g,.badge.err .g{color:var(--bad)}
+.badge.veto,.badge.err,.badge.sell{border-color:var(--bad);background:var(--bad-soft)}
+.badge.veto .g,.badge.err .g,.badge.sell .g{color:var(--bad)}
 .badge.bull{border-color:var(--good);background:var(--good-soft)}
 .badge.bull .g{color:var(--good)}
 .badge.bear{border-color:var(--bad);background:var(--bad-soft)}

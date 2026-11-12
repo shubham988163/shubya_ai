@@ -105,7 +105,9 @@ AUTO_EXIT_ON_STOP = True        # Automatically close open positions when traili
 
 # --- Position Deduplication & Re-entry Cooldown ---
 ALLOW_DUPLICATE_SYMBOLS = False      # Strictly disallow opening duplicate trades on the same underlying stock/option
-REENTRY_COOLDOWN_MINUTES = 2         # Quick 2-minute cooldown (rapid re-entry when a good setup appears)
+REENTRY_COOLDOWN_MINUTES = 10         # Standard cooldown between trades on the same underlying (gives time for new base)
+LOSS_COOLDOWN_MINUTES = 20           # Strict cooldown after a losing trade on the same underlying (prevents chop/revenge)
+MAX_LOSSES_PER_SYMBOL_DAY = 2        # Lockout underlying after 2 losing trades in the same session
 MAX_DAILY_TRADES = 10                # Maximum total quality trades allowed per day (plenty of room for good setups)
 AGENT_TRADE_INDEX_OPTIONS = True    # Automatically evaluate and execute NIFTY & BANK NIFTY index option breakout setups
 

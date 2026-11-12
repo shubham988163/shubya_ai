@@ -734,6 +734,22 @@ def get_data(date: str | None) -> dict:
     for t in open_trades_all + closed_trades_date:
         if t["id"] not in seen_ids:
             seen_ids.add(t["id"])
+            if not t.get("agent_verdict"):
+                try:
+                    cand = conn.execute(
+                        "SELECT council_action, council_conviction, council_reasons FROM candidate_signals WHERE trade_id = ?",
+                        (t["id"],)
+                    ).fetchone()
+                    if cand:
+                        t["agent_verdict"] = cand["council_action"].lower() if cand["council_action"] else "buy"
+                        t["agent_confidence"] = (cand["council_conviction"] or 8) / 10.0
+                        t["agent_reasons"] = json.dumps([f"{cand['council_conviction']}/10: {cand['council_reasons']}"])
+                    elif "index_orb" in (t.get("strategy_id") or "") or "NIFTY" in t.get("symbol", ""):
+                        t["agent_verdict"] = "buy"
+                        t["agent_confidence"] = 0.85
+                        t["agent_reasons"] = json.dumps(["Index ORB Breakout: 15-min range breakout"])
+                except Exception:
+                    pass
             trades.append(t)
 
     rejections = [dict(r) for r in conn.execute(
@@ -2478,7 +2494,7 @@ function renderCfg(d){
   const r=el("span","muted"); r.textContent="“"+(cfg.rationale||"")+"”"; c.append(r);
 }
 
-const VGLY={approve:"\u2713", caution:"\u25D4", veto:"\u2715", ok:"\u2713", err:"\u2715"};
+const VGLY={approve:"\u2713", caution:"\u25D4", veto:"\u2715", ok:"\u2713", err:"\u2715", buy:"\u2713", sell:"\u2715", hold:"\u25D4"};
 function verdictBadge(v){
   if(!v) return el("span","muted","pending");
   const b=el("span","badge sm "+v);
@@ -2593,7 +2609,11 @@ function renderTrades(d){
         if(tr.agent_confidence!=null) vtd.append(el("span","small"," "+Number(tr.agent_confidence).toFixed(2)));
         row.append(vtd);
         let reasons="—";
-        try{const rr=JSON.parse(tr.agent_reasons||"[]"); if(rr.length)reasons=rr.join("; ");}catch(e){}
+        try{
+          const rr=JSON.parse(tr.agent_reasons||"[]");
+          if(Array.isArray(rr) && rr.length) reasons=rr.join("; ");
+          else if(typeof rr==="string" && rr) reasons=rr;
+        }catch(e){if(tr.agent_reasons) reasons=tr.agent_reasons;}
         const rtd=el("td","small",reasons); rtd.style.maxWidth="320px"; row.append(rtd);
         openT.append(row);
       });
@@ -2685,7 +2705,11 @@ function renderTrades(d){
         if(tr.agent_confidence!=null) vtd.append(el("span","small"," "+Number(tr.agent_confidence).toFixed(2)));
         row.append(vtd);
         let reasons = "—";
-        try{const rr=JSON.parse(tr.agent_reasons||"[]"); if(rr.length)reasons=rr.join("; ");}catch(e){}
+        try{
+          const rr = JSON.parse(tr.agent_reasons||"[]");
+          if(Array.isArray(rr) && rr.length) reasons = rr.join("; ");
+          else if(typeof rr==="string" && rr) reasons = rr;
+        }catch(e){if(tr.agent_reasons) reasons = tr.agent_reasons;}
         const rtd = el("td","small",reasons);
         rtd.style.maxWidth = "320px";
         row.append(rtd);

@@ -1,3 +1,4 @@
 # Ensure shell scripts always have UNIX line endings (LF) on all platforms
 *.sh text eol=lf
 *.bash text eol=lf
+

@@ -67,6 +67,8 @@ from trading.config import (
     OPTION_ITM_DEPTH,
     OPTION_STRIKE_TYPE,
     REENTRY_COOLDOWN_MINUTES,
+    LOSS_COOLDOWN_MINUTES,
+    MAX_LOSSES_PER_SYMBOL_DAY,
     RISK_PER_TRADE,
     SCAN_UNIVERSE,
     SQUAREOFF_TIME,
@@ -763,6 +765,11 @@ def execute_recommendation(
                 "trade_id": trade_id,
                 "rejection_reason": reason,
             })
+        if ledger and executed and trade_id is not None:
+            verdict = rec.action.lower()
+            conf = round(float(rec.conviction) / 10.0, 2)
+            reasons_list = [f"{rec.conviction}/10: {rec.decision_rationale}"]
+            ledger.save_agent_verdict(trade_id, verdict, conf, reasons_list)
 
     # Missing stop-loss check (Amendment 3: no fallback)
     if not rec.stop_loss or rec.stop_loss <= 0:
@@ -933,20 +940,32 @@ def _run_scanner_pass(
                 print(f"    SKIPPED: active position already open in {cand_und} (deduplication)")
                 continue
 
-        # Pre-check 2: Skip if trade on this symbol closed recently (re-entry cooldown)
-        if ledger and REENTRY_COOLDOWN_MINUTES > 0:
+        # Pre-check 2: Skip if trade on this symbol closed recently (re-entry cooldown / loss lockout)
+        if ledger and (REENTRY_COOLDOWN_MINUTES > 0 or LOSS_COOLDOWN_MINUTES > 0):
             closed_today = getattr(ledger, "closed_trades_today", lambda: [])()
             matching_closed = [
                 c for c in closed_today
                 if (extract_underlying(c.get("symbol", "")) == cand_und or c.get("symbol") == sym) and c.get("exit_ts")
             ]
             if matching_closed:
-                last_exit = max(c["exit_ts"] for c in matching_closed)
+                # 1. Stop-out churn lockout
+                loss_count = sum(1 for c in matching_closed if (c.get("pnl") or 0) < 0)
+                if loss_count >= MAX_LOSSES_PER_SYMBOL_DAY:
+                    print(f"    SKIPPED: {cand_und} reached {MAX_LOSSES_PER_SYMBOL_DAY} stop-outs today (locked out to prevent chop)")
+                    continue
+                
+                # 2. Dynamic cooldown: longer cooldown if last trade was a loss
+                last_c = max(matching_closed, key=lambda c: c.get("exit_ts") or 0)
+                last_exit = last_c.get("exit_ts") or 0
+                last_pnl = float(last_c.get("pnl") or 0.0)
                 elapsed = time.time() - last_exit
-                cooldown_secs = REENTRY_COOLDOWN_MINUTES * 60
+                
+                req_mins = LOSS_COOLDOWN_MINUTES if last_pnl < 0 else REENTRY_COOLDOWN_MINUTES
+                cooldown_secs = req_mins * 60
                 if elapsed < cooldown_secs:
                     rem_min = int((cooldown_secs - elapsed) / 60) + 1
-                    print(f"    SKIPPED: {cand_und} in re-entry cooldown ({rem_min}m remaining)")
+                    cd_type = "loss cooldown" if last_pnl < 0 else "re-entry cooldown"
+                    print(f"    SKIPPED: {cand_und} in {cd_type} ({rem_min}m remaining, last P&L: ₹{last_pnl:.2f})")
                     continue
 
         # Fetch with the scanner's plan so MarketFacts carries the scanner's
@@ -1068,20 +1087,30 @@ def _evaluate_and_execute_index_plan(
             print(f"    SKIPPED: active position already open in {cand_und} (deduplication)")
             return None
 
-    # Pre-check 2: Re-entry cooldown
-    if ledger and REENTRY_COOLDOWN_MINUTES > 0:
+    # Pre-check 2: Re-entry cooldown & loss lockout
+    if ledger and (REENTRY_COOLDOWN_MINUTES > 0 or LOSS_COOLDOWN_MINUTES > 0):
         closed_today = getattr(ledger, "closed_trades_today", lambda: [])()
         matching_closed = [
             c for c in closed_today
             if (extract_underlying(c.get("symbol", "")) == cand_und or c.get("symbol") == sym) and c.get("exit_ts")
         ]
         if matching_closed:
-            last_exit = max(c["exit_ts"] for c in matching_closed)
+            loss_count = sum(1 for c in matching_closed if (c.get("pnl") or 0) < 0)
+            if loss_count >= MAX_LOSSES_PER_SYMBOL_DAY:
+                print(f"    SKIPPED: {cand_und} reached {MAX_LOSSES_PER_SYMBOL_DAY} stop-outs today (locked out to prevent chop)")
+                return None
+
+            last_c = max(matching_closed, key=lambda c: c.get("exit_ts") or 0)
+            last_exit = last_c.get("exit_ts") or 0
+            last_pnl = float(last_c.get("pnl") or 0.0)
             elapsed = time.time() - last_exit
-            cooldown_secs = REENTRY_COOLDOWN_MINUTES * 60
+
+            req_mins = LOSS_COOLDOWN_MINUTES if last_pnl < 0 else REENTRY_COOLDOWN_MINUTES
+            cooldown_secs = req_mins * 60
             if elapsed < cooldown_secs:
                 rem_min = int((cooldown_secs - elapsed) / 60) + 1
-                print(f"    SKIPPED: {cand_und} in re-entry cooldown ({rem_min}m remaining)")
+                cd_type = "loss cooldown" if last_pnl < 0 else "re-entry cooldown"
+                print(f"    SKIPPED: {cand_und} in {cd_type} ({rem_min}m remaining, last P&L: ₹{last_pnl:.2f})")
                 return None
 
     q = plan.option.quote
@@ -1146,6 +1175,13 @@ def _evaluate_and_execute_index_plan(
 
     trade_id = router.execute(signal)
     if trade_id is not None:
+        if router.ledger:
+            router.ledger.save_agent_verdict(
+                trade_id,
+                "buy",
+                0.85,
+                [f"Index ORB Breakout: {sym} {plan.direction} 15-min range breakout"],
+            )
         print(f"    EXECUTED trade #{trade_id} | {opt_symbol} Qty: {qty} @ {price:.2f} | SL: {stop_loss:.2f} | Tgt: {target:.2f}")
         notify(
             f"AI Trader Executed Index Option on {sym}",
