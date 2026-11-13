@@ -27,6 +27,7 @@ from trading.config import (
     DEFAULT_STOCK_OPTION_LOT,
     MAX_OPTION_POSITION_VALUE,
     MAX_OPTION_RISK_PER_TRADE,
+    OPTION_TARGET_MIN_PROFIT,
     OPTION_STRIKE_TYPE,
     OPTION_ITM_DEPTH,
 )
@@ -136,8 +137,10 @@ def build_option_order_from_plan(
 
     # Calculate option target:
     # 1. Modelled target1 if available
-    # 2. Else 1:2 R:R on premium
-    target_premium = plan.premium_at_t1 if plan.premium_at_t1 is not None else round(premium + 2 * (premium - stop_premium), 2)
+    # 2. Minimum OPTION_TARGET_MIN_PROFIT (₹1,200+) or 1:2 R:R
+    min_pts_target = (OPTION_TARGET_MIN_PROFIT / lot_size) if (OPTION_TARGET_MIN_PROFIT and lot_size > 0) else 15.0
+    modelled_target = plan.premium_at_t1 if plan.premium_at_t1 is not None else round(premium + 2 * (premium - stop_premium), 2)
+    target_premium = max(modelled_target, round(premium + min_pts_target, 2), round(premium + 2 * max(0.5, premium - stop_premium), 2))
     if target_premium <= premium:
         target_premium = round(premium + 2 * max(0.5, premium - stop_premium), 2)
 

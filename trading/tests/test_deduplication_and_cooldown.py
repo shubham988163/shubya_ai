@@ -44,14 +44,14 @@ def test_reject_duplicate_active_positions(temp_ledger):
     router = ExecutionRouter(mode="paper", ledger=temp_ledger)
 
     first_sig = {
-        "symbol": "NSE:CDSL26NOV1260CE",
-        "underlying": "CDSL",
+        "symbol": "NSE:NIFTY26NOV24500CE",
+        "underlying": "NIFTY",
         "side": "BUY",
-        "qty": 200,
-        "price": 25.0,
-        "stop_loss": 23.0,
-        "target": 30.0,
-        "strategy_id": "fno_scanner_option",
+        "qty": 65,
+        "price": 100.0,
+        "stop_loss": 94.0,
+        "target": 120.0,
+        "strategy_id": "index_orb_option",
         "is_option": True,
         "ts": time.time(),
     }
@@ -71,7 +71,7 @@ def test_reject_duplicate_active_positions(temp_ledger):
     # 2. Different strike on the same underlying -> rejected
     diff_strike_sig = dict(
         first_sig,
-        symbol="NSE:CDSL26NOV1280CE",
+        symbol="NSE:NIFTY26NOV24550CE",
         ts=time.time() + 20,
     )
     err2 = router.risk_check(diff_strike_sig)
@@ -79,15 +79,16 @@ def test_reject_duplicate_active_positions(temp_ledger):
     assert "symbol_already_open" in err2
     assert router.execute(diff_strike_sig) is None
 
-    # 3. Cash equity on the same underlying -> rejected
+    # 3. Cash/Index signal on the same underlying -> rejected
     equity_sig = {
-        "symbol": "CDSL",
+        "symbol": "NIFTY",
+        "underlying": "NIFTY",
         "side": "BUY",
-        "qty": 10,
-        "price": 1270.0,
-        "stop_loss": 1250.0,
-        "target": 1310.0,
-        "strategy_id": "fno_scanner",
+        "qty": 1,
+        "price": 2400.0,
+        "stop_loss": 2350.0,
+        "target": 2500.0,
+        "strategy_id": "index_orb_option",
         "ts": time.time() + 30,
     }
     err3 = router.risk_check(equity_sig)
@@ -95,16 +96,16 @@ def test_reject_duplicate_active_positions(temp_ledger):
     assert "symbol_already_open" in err3
     assert router.execute(equity_sig) is None
 
-    # 4. A completely different underlying (e.g. RELIANCE) -> passes
+    # 4. A completely different underlying (e.g. BANKNIFTY) -> passes
     diff_stock_sig = {
-        "symbol": "NSE:RELIANCE26NOV1300CE",
-        "underlying": "RELIANCE",
+        "symbol": "NSE:BANKNIFTY26NOV52000CE",
+        "underlying": "BANKNIFTY",
         "side": "BUY",
-        "qty": 250,
-        "price": 30.0,
-        "stop_loss": 28.50,
-        "target": 35.0,
-        "strategy_id": "fno_scanner_option",
+        "qty": 30,
+        "price": 100.0,
+        "stop_loss": 85.0,
+        "target": 140.0,
+        "strategy_id": "index_orb_option",
         "is_option": True,
         "ts": time.time() + 40,
     }
@@ -147,14 +148,14 @@ def test_reentry_cooldown_rejection(temp_ledger):
 
     # Check that another symbol is NOT affected by MUTHOOTFIN's cooldown
     unrelated_sig = {
-        "symbol": "NSE:INFY26NOV1800CE",
-        "underlying": "INFY",
+        "symbol": "NSE:BANKNIFTY26NOV52000CE",
+        "underlying": "BANKNIFTY",
         "side": "BUY",
-        "qty": 300,
-        "price": 30.0,
-        "stop_loss": 28.50,
-        "target": 35.0,
-        "strategy_id": "fno_scanner_option",
+        "qty": 30,
+        "price": 100.0,
+        "stop_loss": 85.0,
+        "target": 140.0,
+        "strategy_id": "index_orb_option",
         "is_option": True,
         "ts": time.time(),
     }
@@ -295,20 +296,20 @@ def test_index_options_execution_and_guards(temp_ledger, monkeypatch):
 
 
 def test_max_option_risk_and_position_caps(temp_ledger):
-    """Router must strictly enforce MAX_OPTION_POSITION_VALUE (10k) and MAX_OPTION_RISK_PER_TRADE (500 INR)."""
+    """Router must strictly enforce MAX_OPTION_POSITION_VALUE (20k) and MAX_OPTION_RISK_PER_TRADE (500 INR)."""
     router = ExecutionRouter(mode="paper", ledger=temp_ledger)
 
-    # 1. Oversized position (e.g. MuthootFin style 110 premium x 250 lot = 27,500 INR) must be REJECTED
+    # 1. Oversized position (e.g. 400 premium x 65 lot = 26,000 INR > 20k cap) must be REJECTED
     oversized_sig = {
-        "symbol": "NSE:MUTHOOTFIN26NOV2450CE",
-        "underlying": "MUTHOOTFIN",
+        "symbol": "NSE:NIFTY26NOV24500CE",
+        "underlying": "NIFTY",
         "side": "BUY",
-        "qty": 250,
-        "price": 110.0,
-        "stop_loss": 99.0,  # 10% SL (11 pts x 250 = 2,750 INR risk, value = 27,500 INR)
-        "target": 130.0,
+        "qty": 65,
+        "price": 400.0,
+        "stop_loss": 375.0,
+        "target": 450.0,
         "is_option": True,
-        "strategy_id": "fno_scanner_option",
+        "strategy_id": "index_orb_option",
         "ts": time.time(),
     }
     err = router.risk_check(oversized_sig)
@@ -316,17 +317,17 @@ def test_max_option_risk_and_position_caps(temp_ledger):
     assert "max_option_position_value" in err
     assert router.execute(oversized_sig) is None
 
-    # 2. Wide stop loss (e.g. risking 30% on 30 INR premium with 300 lot = 2,700 INR risk) must be REJECTED
+    # 2. Wide stop loss (e.g. risking 15 pts on 65 lot = 975 INR risk > 500 cap) must be REJECTED
     wide_stop_sig = {
-        "symbol": "NSE:INFY26NOV1800CE",
-        "underlying": "INFY",
+        "symbol": "NSE:NIFTY26NOV24500CE",
+        "underlying": "NIFTY",
         "side": "BUY",
-        "qty": 300,
-        "price": 30.0,
-        "stop_loss": 21.0,  # 9 pts x 300 = 2,700 INR risk (> 500 cap)
-        "target": 45.0,
+        "qty": 65,
+        "price": 100.0,
+        "stop_loss": 85.0,  # 15 pts x 65 = 975 INR risk (> 500 cap)
+        "target": 130.0,
         "is_option": True,
-        "strategy_id": "fno_scanner_option",
+        "strategy_id": "index_orb_option",
         "ts": time.time(),
     }
     err2 = router.risk_check(wide_stop_sig)
@@ -334,17 +335,35 @@ def test_max_option_risk_and_position_caps(temp_ledger):
     assert "max_option_risk_exceeded" in err2
     assert router.execute(wide_stop_sig) is None
 
-    # 3. Properly sized trade with tight risk (<= 500 INR risk and <= 10,000 INR value) must PASS
-    valid_sig = {
-        "symbol": "NSE:INFY26NOV1800CE",
-        "underlying": "INFY",
+    # 3. Stock option must be REJECTED under ONLY_INDEX_OPTIONS
+    stock_opt_sig = {
+        "symbol": "NSE:MUTHOOTFIN26NOV2450CE",
+        "underlying": "MUTHOOTFIN",
         "side": "BUY",
-        "qty": 300,
+        "qty": 250,
         "price": 30.0,
-        "stop_loss": 28.50,  # 1.5 pts x 300 = 450 INR risk (<= 500 cap)
+        "stop_loss": 28.5,
         "target": 35.0,
         "is_option": True,
         "strategy_id": "fno_scanner_option",
+        "ts": time.time(),
+    }
+    err3 = router.risk_check(stock_opt_sig)
+    assert err3 is not None
+    assert "stock_options_disabled" in err3
+    assert router.execute(stock_opt_sig) is None
+
+    # 4. Properly sized index trade with tight risk (<= 500 INR risk and <= 20,000 INR value) must PASS
+    valid_sig = {
+        "symbol": "NSE:NIFTY26NOV24500CE",
+        "underlying": "NIFTY",
+        "side": "BUY",
+        "qty": 65,
+        "price": 100.0,
+        "stop_loss": 94.0,  # 6 pts x 65 = 390 INR risk (<= 500 cap)
+        "target": 120.0,
+        "is_option": True,
+        "strategy_id": "index_orb_option",
         "ts": time.time(),
     }
     assert router.risk_check(valid_sig) is None
@@ -368,19 +387,16 @@ def test_stock_lot_wise_risk_and_max_viable_premiums():
     assert get_lot_size("MRF") == 5
 
     # 2. Max viable premium ensures 1-lot risk <= 1,250 and 1-lot capital <= 10,000
-    # For MUTHOOTFIN: lot 250 -> min(1250/(250*0.10)=50, 10000/250=40) = 40.0 INR max premium
-    prem_muthoot = get_max_viable_option_premium("MUTHOOTFIN")
+    prem_muthoot = get_max_viable_option_premium("MUTHOOTFIN", max_risk=1250.0, max_pos_val=10000.0)
     assert prem_muthoot == 40.0
     assert 250 * prem_muthoot <= 10000.0
     assert 250 * (prem_muthoot * 0.10) <= 1250.0
 
-    # For NIFTY: lot 65 -> min(1250/(65*0.10)=192.31, 10000/65=153.85) = 153.85 INR max premium
-    prem_nifty = get_max_viable_option_premium("NIFTY")
+    prem_nifty = get_max_viable_option_premium("NIFTY", max_risk=1250.0, max_pos_val=10000.0)
     assert prem_nifty == 153.85
     assert 65 * (prem_nifty * 0.10) <= 1250.0
 
-    # For TATASTEEL: lot 2750 -> min(1250/(2750*0.10)=4.55, 10000/2750=3.64) = 3.64 INR max premium
-    prem_tatasteel = get_max_viable_option_premium("TATASTEEL")
+    prem_tatasteel = get_max_viable_option_premium("TATASTEEL", max_risk=1250.0, max_pos_val=10000.0)
     assert prem_tatasteel == 3.64
     assert abs(2750 * prem_tatasteel - 10000.0) <= 20.0
 

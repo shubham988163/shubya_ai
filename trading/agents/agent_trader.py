@@ -1122,6 +1122,7 @@ def _evaluate_and_execute_index_plan(
         MIN_OPTION_STOP_LOSS_PCT,
         MAX_OPTION_RISK_PER_TRADE,
         MAX_OPTION_POSITION_VALUE,
+        OPTION_TARGET_MIN_PROFIT,
     )
     qty = get_lot_size(sym)
 
@@ -1147,7 +1148,10 @@ def _evaluate_and_execute_index_plan(
     if stop_loss >= price or stop_loss <= 0:
         stop_loss = max(0.05, round(price * (1 - stop_pct), 2))
 
-    target = plan.option.premium_at_t1 if plan.option.premium_at_t1 is not None else round(price + 2 * max(0.5, price - stop_loss), 2)
+    # Target: ensure at least 1:2 R:R AND at least OPTION_TARGET_MIN_PROFIT (₹1,200+ profit)
+    min_pts_target = (OPTION_TARGET_MIN_PROFIT / qty) if (OPTION_TARGET_MIN_PROFIT and qty > 0) else 15.0
+    modelled_target = plan.option.premium_at_t1 if plan.option.premium_at_t1 is not None else round(price + 2 * max(0.5, price - stop_loss), 2)
+    target = max(modelled_target, round(price + min_pts_target, 2), round(price + 2 * max(0.5, price - stop_loss), 2))
     if target <= price:
         target = round(price + 2 * max(0.5, price - stop_loss), 2)
 

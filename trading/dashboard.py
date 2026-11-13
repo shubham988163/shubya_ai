@@ -198,6 +198,16 @@ def _handle_trade(data: dict) -> dict:
     )
 
     if is_option:
+        from trading.config import ONLY_INDEX_OPTIONS, MAX_OPTION_RISK_PER_TRADE, OPTION_TARGET_MIN_PROFIT
+        if ONLY_INDEX_OPTIONS:
+            is_idx = any(idx in raw_sym.upper() for idx in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"))
+            if not is_idx:
+                return {
+                    "ok": False,
+                    "rejected": True,
+                    "reason": "Option A Active: Stock options are disabled. Only Index options (NIFTY, BANKNIFTY, SENSEX) are permitted to prevent big losses.",
+                }
+
         # Check if raw_sym is an underlying or a direct option identifier
         is_direct_option = ("CE" in raw_sym or "PE" in raw_sym) and any(c.isdigit() for c in raw_sym)
 
@@ -271,9 +281,12 @@ def _handle_trade(data: dict) -> dict:
         sl = float(data["stop_loss"]) if data.get("stop_loss") else None
         tg = float(data["target"]) if data.get("target") else None
         if sl is None and price > 0:
-            sl = round(price * 0.70, 2)
+            max_pts = (MAX_OPTION_RISK_PER_TRADE / qty) if qty > 0 else 10.0
+            sl = round(max(0.05, price - max_pts), 2)
         if tg is None and price > 0:
-            tg = round(price * 1.50, 2)
+            min_tg_pts = (OPTION_TARGET_MIN_PROFIT / qty) if qty > 0 else 20.0
+            sl_dist = max(0.5, price - sl) if sl else min_tg_pts / 2
+            tg = round(price + max(min_tg_pts, 2 * sl_dist), 2)
 
         signal = {
             "symbol": sym,

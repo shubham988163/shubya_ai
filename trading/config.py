@@ -96,8 +96,10 @@ MAX_COST_RISK_RATIO = 0.30      # Max friction as a fraction of risk (30%)
 # --- Exit management: deterministic trailing stop ---
 TRAIL_ENABLED = True             # Enabled: trailing stop moves to breakeven & trails to protect profit
 BREAKEVEN_AT_R = 1.0            # favourable excursion (in R) that moves the stop to breakeven
-OPTION_BREAKEVEN_AT_R = 0.3     # for options: arm breakeven at 0.3R gain (rapid risk elimination)
-OPTION_BREAKEVEN_PCT = 0.02     # for options: arm breakeven at +2% gain (locks cost + brokerage)
+OPTION_BREAKEVEN_AT_R = 1.0     # for options: arm breakeven at 1.0R gain (stops choking winners prematurely)
+OPTION_BREAKEVEN_PCT = 0.08     # for options: arm breakeven at +8% gain (lets setups breathe to reach target)
+OPTION_TRAIL_PROFIT_TRIGGER = 600.0  # INR; only arm trailing stop once gross profit reaches +₹600
+OPTION_TARGET_MIN_PROFIT = 1200.0    # INR; minimum target profit for an option trade (₹1,200+)
 TRAIL_ATR_MULT = 2.0            # chandelier trail distance in ATR(14) units
 PARTIAL_AT_R = 1.5              # R multiple that triggers partial booking (None disables)
 PARTIAL_PCT = 0.5               # fraction of the position booked at the partial
@@ -109,7 +111,8 @@ REENTRY_COOLDOWN_MINUTES = 10         # Standard cooldown between trades on the 
 LOSS_COOLDOWN_MINUTES = 20           # Strict cooldown after a losing trade on the same underlying (prevents chop/revenge)
 MAX_LOSSES_PER_SYMBOL_DAY = 2        # Lockout underlying after 2 losing trades in the same session
 MAX_DAILY_TRADES = 10                # Maximum total quality trades allowed per day (plenty of room for good setups)
-AGENT_TRADE_INDEX_OPTIONS = True    # Automatically evaluate and execute NIFTY & BANK NIFTY index option breakout setups
+AGENT_TRADE_INDEX_OPTIONS = True    # Automatically evaluate and execute NIFTY, BANK NIFTY & SENSEX index options
+ONLY_INDEX_OPTIONS = True           # Option A: Restrict option trading strictly to indices (NIFTY, BANKNIFTY, SENSEX)
 
 # --- AI agent ---
 # Provider is auto-selected in trading/agents/llm.py: Gemini when
@@ -233,13 +236,13 @@ STOCK_LOT_SIZES: dict[str, int] = {
 }
 
 DEFAULT_STOCK_OPTION_LOT = 250
-MAX_OPTION_POSITION_VALUE = 27_000.0  # INR; hard cap per option trade (allows full 27k capital deployment)
-MAX_OPTION_RISK_PER_TRADE = 1350.0    # INR; max risk per option trade (5% of 27k capital)
-OPTION_STOP_LOSS_PCT = 0.10           # 10% maximum stop loss (cuts loss small instead of 30% collapse)
+MAX_OPTION_POSITION_VALUE = 20_000.0  # INR; max position value per index option trade
+MAX_OPTION_RISK_PER_TRADE = 500.0     # INR; hard cap: max ₹500 risk per trade (strictly caps losses)
+OPTION_STOP_LOSS_PCT = 0.10           # 10% maximum stop loss
 MIN_OPTION_STOP_LOSS_PCT = 0.03       # 3% minimum stop loss distance (stops tighter than 3% get noise-stopped)
 OPTION_STRIKE_TYPE = "ITM"            # "ITM" (In-The-Money only) or "ATM"
 OPTION_ITM_DEPTH = 1                  # 1 = Nearest ITM strike (1 strike ITM for peak liquidity & delta)
-AGENT_TRADE_OPTIONS = True            # When True, the agent executes trade signals as ITM option contracts
+AGENT_TRADE_OPTIONS = False           # False: Stock scanner does NOT trade stock options (Option A: Index Focused)
 
 
 def get_max_viable_option_premium(

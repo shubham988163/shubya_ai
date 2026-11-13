@@ -51,6 +51,7 @@ class TrailConfig:
     breakeven_at_r: float = 1.0
     option_breakeven_at_r: float | None = None
     option_breakeven_pct: float | None = None
+    option_trail_rupee: float | None = None
     trail_atr_mult: float = 2.0
     # ``None`` disables partial booking entirely.
     partial_at_r: float | None = 1.5
@@ -87,6 +88,7 @@ def trail_config_from_settings(**overrides) -> TrailConfig:
         BREAKEVEN_AT_R,
         OPTION_BREAKEVEN_AT_R,
         OPTION_BREAKEVEN_PCT,
+        OPTION_TRAIL_PROFIT_TRIGGER,
         PARTIAL_AT_R,
         PARTIAL_PCT,
         TRAIL_ATR_MULT,
@@ -98,6 +100,7 @@ def trail_config_from_settings(**overrides) -> TrailConfig:
         breakeven_at_r=BREAKEVEN_AT_R,
         option_breakeven_at_r=OPTION_BREAKEVEN_AT_R,
         option_breakeven_pct=OPTION_BREAKEVEN_PCT,
+        option_trail_rupee=OPTION_TRAIL_PROFIT_TRIGGER,
         trail_atr_mult=TRAIL_ATR_MULT,
         partial_at_r=PARTIAL_AT_R,
         partial_pct=PARTIAL_PCT,
@@ -199,10 +202,14 @@ def update_exit(
     r_multiple = favourable / risk_per_share
 
     # 3. Arm at breakeven. Sticky: once armed it stays armed even if price falls back.
-    if is_option and config.option_breakeven_at_r is not None:
+    if is_option:
+        rupee_gain = favourable * qty
+        rupee_armed = (config.option_trail_rupee is not None and rupee_gain >= config.option_trail_rupee)
         opt_pct = (favourable / entry) if entry > 0 else 0.0
         pct_armed = (config.option_breakeven_pct is not None and opt_pct >= config.option_breakeven_pct)
-        armed = state.armed or (r_multiple >= config.option_breakeven_at_r) or pct_armed
+        r_thresh = config.option_breakeven_at_r if config.option_breakeven_at_r is not None else config.breakeven_at_r
+        r_armed = (r_multiple >= r_thresh)
+        armed = state.armed or rupee_armed or r_armed or pct_armed
     else:
         armed = state.armed or (r_multiple >= config.breakeven_at_r)
 

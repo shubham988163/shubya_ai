@@ -282,7 +282,13 @@ class ExecutionRouter:
                 MAX_OPTION_POSITION_VALUE,
                 MAX_OPTION_RISK_PER_TRADE,
                 MIN_OPTION_STOP_LOSS_PCT,
+                ONLY_INDEX_OPTIONS,
             )
+            if ONLY_INDEX_OPTIONS:
+                is_index = any(idx in sym for idx in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX"))
+                if not is_index:
+                    return f"stock_options_disabled (Option A: only index options permitted: NIFTY, BANKNIFTY, SENSEX)"
+
             cap = MAX_OPTION_POSITION_VALUE
             if existing + position_value > cap:
                 return f"max_option_position_value (cap={cap:.0f}, would_be={existing + position_value:.0f})"
