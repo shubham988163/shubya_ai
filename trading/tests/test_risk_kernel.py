@@ -167,12 +167,12 @@ def test_risk_per_trade():
           risked < RISK_PER_TRADE * 0.5)
     check("it was the capital cap, not the multiplier, that set the size —"
           " which is what misled the agent",
-          87 * 2290.854 > MAX_POSITION_VALUE * 0.99,
+          MAX_POSITION_VALUE * 0.99 < 87 * 2290.854,
           f"{87 * 2290.854:.0f} vs cap {MAX_POSITION_VALUE:.0f}")
     check("so the kernel correctly accepts it — the veto was wrong",
           router(0.5).risk_check(tcs) is None, router(0.5).risk_check(tcs))
     check("it was also inside the capital cap",
-          87 * 2290.0 < MAX_POSITION_VALUE)
+          MAX_POSITION_VALUE > 87 * 2290.0)
     # What the supervisor DESCRIBED — a genuinely doubled position — is the
     # thing the kernel now refuses, whoever produces it.
     doubled = signal(symbol="TCS", qty=174, price=2290.0, stop_loss=2306.5,
@@ -181,7 +181,7 @@ def test_risk_per_trade():
     check("a genuinely doubled position IS refused pre-trade",
           reason is not None and reason.startswith("risk_per_trade"), reason)
     check("and it is refused on risk, not on the capital cap",
-          174 * 2290.0 > MAX_POSITION_VALUE
+          MAX_POSITION_VALUE < 174 * 2290.0
           or reason.startswith("risk_per_trade"), reason)
 
 
