@@ -79,6 +79,11 @@ AVWAP_VOL_MULT = 1.2
 
 # --- Risk kernel (hard limits — the AI agent can NEVER override these) ---
 # Scaled to ACCOUNT_CAPITAL = 15,000 INR:
+# Headroom on the per-trade risk cap, so the kernel rejects a position that is
+# genuinely oversized rather than one that is a rupee out from rounding the
+# quantity down. Keep it tight: at 1.02 it absorbs rounding and nothing else.
+# It is NOT slack for sizing to spend — see expected_risk_per_share().
+RISK_TOLERANCE = 1.02
 DAILY_LOSS_LIMIT = -500.0       # INR; hard stop for the day (~3.3% of capital)
 DAILY_PROFIT_TARGET = 1_000.0   # INR; stop opening new trades once hit for the day
 MAX_POSITION_VALUE = 3_000.0    # INR per position (20% of capital)
