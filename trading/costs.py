@@ -73,6 +73,42 @@ def round_trip(entry: float, exit_price: float, qty: int) -> float:
     return breakdown(entry, exit_price, qty).total
 
 
+# --- rate card: NSE equity DELIVERY (CNC), Zerodha ---
+# A position carried overnight is no longer MIS, and the difference is not a
+# rounding detail: STT is 0.1% on BOTH legs instead of 0.025% on the sell
+# alone. Measured on a Rs 2,00,000 position: intraday Rs 117.69, delivery
+# Rs 463.29 — 3.94x. Backtests that hold overnight while charging intraday
+# rates read as profitable when they are not; one such arm flipped from
+# +9,418 to -20,400 once this was applied.
+STT_PCT_DELIVERY = 0.001           # 0.1%, BOTH buy and sell
+STAMP_PCT_BUY_DELIVERY = 0.00015   # 0.015%, buy side only
+DP_CHARGE_PER_SELL = 15.93         # per scrip per day, + GST, on the sell leg
+
+
+def breakdown_delivery(entry: float, exit_price: float, qty: int) -> CostBreakdown:
+    """Itemised round-trip cost for one DELIVERY (CNC) equity position."""
+    buy_value, sell_value = entry * qty, exit_price * qty
+    turnover = buy_value + sell_value
+    exchange = EXCHANGE_TXN_PCT * turnover
+    sebi = SEBI_PCT * turnover
+    # The DP charge is a depository fee, not brokerage, and carries its own
+    # GST — folded into `brokerage` here so `total` stays the sum of fields.
+    dp = DP_CHARGE_PER_SELL
+    return CostBreakdown(
+        brokerage=dp,
+        stt=STT_PCT_DELIVERY * (buy_value + sell_value),
+        exchange=exchange,
+        sebi=sebi,
+        stamp=STAMP_PCT_BUY_DELIVERY * buy_value,
+        gst=GST_PCT * (dp + exchange + sebi),
+    )
+
+
+def round_trip_delivery(entry: float, exit_price: float, qty: int) -> float:
+    """Total round-trip DELIVERY charges in INR."""
+    return breakdown_delivery(entry, exit_price, qty).total
+
+
 def breakeven_move(price: float, qty: int) -> float:
     """Points of favourable move needed just to cover costs.
 

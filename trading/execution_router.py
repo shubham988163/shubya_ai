@@ -18,6 +18,9 @@ from trading.config import (
     MAX_POSITION_VALUE,
     MAX_OPEN_POSITIONS,
     MAX_ORDERS_PER_SEC,
+    RISK_PER_TRADE,
+    RISK_TOLERANCE,
+    MAX_OPTION_RISK_PER_TRADE,
     SLIPPAGE_PCT,
     CHARGES_PCT_ROUND_TRIP,
     MAX_COST_RISK_RATIO,
@@ -27,6 +30,64 @@ from trading.config import (
 from trading.ledger import Ledger
 
 IST = ZoneInfo("Asia/Kolkata")
+
+
+def expected_fill(price: float, side: str) -> float:
+    """The price we assume we actually get, with slippage against us.
+
+    One definition, used by sizing, by the kernel and by the paper fill, so
+    all three reason about the same number.
+    """
+    slip = SLIPPAGE_PCT * price
+    return price + slip if side == "BUY" else price - slip
+
+
+def risk_per_share(signal: dict) -> float | None:
+    """Entry-to-stop distance at the signal's own price, untouched.
+
+    Deliberately pure: it answers "is this stop SANE", which is a property of
+    the signal and must not be perturbed by slippage. Returns None when the
+    risk cannot be known, negative when the stop is on the wrong side.
+    """
+    stop = signal.get("stop_loss")
+    if stop is None:
+        return None
+    try:
+        price, stop = float(signal["price"]), float(stop)
+    except (TypeError, ValueError):
+        return None
+    return price - stop if signal["side"] == "BUY" else stop - price
+
+
+def expected_risk_per_share(signal: dict) -> float | None:
+    """`risk_per_share` measured at the price we expect to FILL at.
+
+    Slippage moves the fill AWAY from the stop — a BUY fills higher, a SELL
+    lower — so the entry-to-stop distance the ledger ends up recording is
+    always wider than the one measured at the last traded price. Sizing and
+    the kernel both have to bound that wider distance.
+
+    Measured in ai-tradeagent on 2026-10-27: sizing divided the allowance by
+    the distance at the untouched close, the kernel re-checked the same
+    untouched number, and the position was then booked at the slipped fill, so
+    every trade risked SLIPPAGE_PCT*price per share more than intended. At that
+    book's average 0.77% stop that is ~3% over the allowance — past the 2%
+    RISK_TOLERANCE — which is why the supervisor flagged a "risk kernel bypass"
+    on roughly every session (149 vs 145 shares of SBIN on 10-21 is the worked
+    example) while the kernel's own tests passed.
+
+    Shares `risk_per_share`'s contract: None when unknowable, negative when the
+    stop is on the wrong side.
+    """
+    stop = signal.get("stop_loss")
+    if stop is None:
+        return None
+    try:
+        price, stop = float(signal["price"]), float(stop)
+    except (TypeError, ValueError):
+        return None
+    fill = expected_fill(price, signal["side"])
+    return fill - stop if signal["side"] == "BUY" else stop - fill
 
 
 class RateLimiter:
@@ -120,6 +181,35 @@ class ExecutionRouter:
         per_share_risk = abs(price - stop_loss)
         if per_share_risk <= 0.05:
             return "invalid_stop_loss (stop loss too close to entry price)"
+
+        # 1b. Per-trade risk cap — the kernel's central limit.
+        #
+        # This check was absent until 2026-11-20. The stop checks above bound
+        # the risk PER SHARE and MAX_POSITION_VALUE below bounds the notional,
+        # but nothing multiplied the two: a wide stop stays under the value cap
+        # while risking many times the allowance (measured: a signal risking
+        # 40x was accepted). It also left `risk_multiplier` as a mere on/off
+        # switch — the halt at the top of this function was the only thing
+        # reading it, so a 0.5 "trade smaller" day was enforced solely by
+        # strategy.py volunteering, which is the layer this kernel exists to
+        # police.
+        #
+        # Magnitude is measured at the expected FILL, because that is where the
+        # ledger books it — always the wider of the two distances. The sanity
+        # checks above deliberately use the untouched price, so slippage can
+        # never turn a stop sitting on the entry into a sliver of positive risk
+        # that passes.
+        fill_risk = expected_risk_per_share(signal)
+        if fill_risk is None or fill_risk <= 0:
+            return "no_stop_loss (risk cannot be bounded)"
+        base_risk = MAX_OPTION_RISK_PER_TRADE if is_option else RISK_PER_TRADE
+        allowed_risk = base_risk * self.day_config["risk_multiplier"]
+        signal_risk = int(signal.get("qty", 0)) * fill_risk
+        if signal_risk > allowed_risk * RISK_TOLERANCE:
+            return (f"risk_per_trade (risks={signal_risk:.0f}, "
+                    f"allowed={allowed_risk:.0f} = {base_risk:.0f}"
+                    f"x{self.day_config['risk_multiplier']:g}, "
+                    f"max_qty={int(allowed_risk / fill_risk)})")
 
         # 2. Cost-floor check: round-trip friction cannot exceed MAX_COST_RISK_RATIO of risk
         if is_option:
@@ -236,6 +326,5 @@ class ExecutionRouter:
         if not ltp or ltp <= 0:
             ltp = signal["price"]
 
-        slip = SLIPPAGE_PCT * ltp
-        return ltp + slip if signal["side"] == "BUY" else ltp - slip
+        return expected_fill(float(ltp), signal["side"])
 

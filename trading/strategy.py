@@ -38,7 +38,8 @@ from trading.config import (
 )
 from trading.costs import round_trip as round_trip_charges
 from trading.exits import TrailState, trail_config_from_settings, update_exit
-from trading.execution_router import ExecutionRouter
+from trading.execution_router import (ExecutionRouter, expected_fill,
+                                      expected_risk_per_share)
 from trading.ledger import Ledger
 from trading.notify import notify
 
@@ -504,13 +505,24 @@ class Engine:
                 target = price + rr * risk if side == "BUY" else price - rr * risk
         if risk <= 0:
             return
-        qty = self.size(price, risk)
+        # Size against the price we expect to FILL at, not the close. Slippage
+        # widens the entry-to-stop distance after the quantity is chosen, so
+        # sizing off `price` books more risk than the allowance and the kernel
+        # rejects it — see expected_risk_per_share(). The stop is rounded
+        # first, because the rounded one is what the signal carries below and
+        # therefore what the kernel re-derives its own number from.
+        sl_sent = round(sl, 2)
+        fill_risk = expected_risk_per_share(
+            {"side": side, "price": price, "stop_loss": sl_sent})
+        if fill_risk is None or fill_risk <= 0:
+            return
+        qty = self.size(expected_fill(price, side), fill_risk)
         if qty < 1:
             return
         self.prices[symbol] = price
         trend_state = getattr(sig, "trend_state", "up" if side == "BUY" else "down") if "instance" in self.strat and self.strat["instance"] is not None else ("up" if side == "BUY" else "down")
         signal = {"symbol": symbol, "side": side, "qty": qty, "price": price,
-                  "ts": ts, "stop_loss": round(sl, 2), "initial_stop": round(sl, 2),
+                  "ts": ts, "stop_loss": sl_sent, "initial_stop": sl_sent,
                   "target": round(target, 2),
                   "strategy_id": self.strat["id"],
                   "regime": self.router.day_config.get("regime"),
