@@ -2195,8 +2195,14 @@ async function loadQuotes(){
     const res = await r.json();
     const itemsBox = document.getElementById("liveTickerItems");
     const updatedEl = document.getElementById("liveTickerUpdated");
-    if(itemsBox && res.quotes && res.quotes.length){
-      itemsBox.innerHTML = "";
+    if(!itemsBox) return;
+    if(!res.quotes || !res.quotes.length){
+      if(updatedEl) updatedEl.textContent = "NSE Market Closed (Weekend) • Stream Idle";
+      itemsBox.innerHTML = '<span class="muted" style="font-size:11.5px;display:flex;align-items:center;gap:6px">⏸️ <b>NSE Live Stream Idle:</b> Indian market is closed (Weekend) or Fyers session is pending.</span>';
+      return;
+    }
+    if(updatedEl) updatedEl.textContent = `Live Feed: ${new Date().toLocaleTimeString()}`;
+    itemsBox.innerHTML = "";
       res.quotes.forEach(q => {
         const v = q.v || {};
         const rawName = (v.short_name || q.n || "").replace("-INDEX","").replace("-EQ","").replace("NSE:","");
@@ -2635,10 +2641,16 @@ PAGE = (_PAGE_TEMPLATE
 def _serve_forever(server, url: str) -> int:
     """Run the server, turning the two normal failures into plain sentences."""
     print(f"{url}  (Ctrl-C to stop)")
-    try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        print()
+    while True:
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            print()
+            break
+        except BaseException as exc:
+            print(f"server exception (auto-recovering): {exc}")
+            import time
+            time.sleep(1)
     return 0
 
 

@@ -32,12 +32,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Literal
 from zoneinfo import ZoneInfo
+
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 import numpy as np
 import pandas as pd
@@ -64,6 +70,7 @@ from trading.config import (
     MAX_DAILY_TRADES,
     MAX_POSITION_VALUE,
     NIFTY50,
+    ONLY_INDEX_OPTIONS,
     OPTION_ITM_DEPTH,
     OPTION_STRIKE_TYPE,
     REENTRY_COOLDOWN_MINUTES,
@@ -876,7 +883,14 @@ def _get_live_ltp(symbol: str) -> float:
     try:
         from trading.fno.fyers import FyersClient
         fyers = FyersClient()
-        fyers_sym = f"NSE:{symbol}-EQ" if not symbol.startswith("NSE:") else symbol
+        if symbol.startswith("NSE:") or symbol.startswith("BSE:"):
+            fyers_sym = symbol
+        elif "SENSEX" in symbol:
+            fyers_sym = f"BSE:{symbol}"
+        elif "CE" in symbol or "PE" in symbol:
+            fyers_sym = f"NSE:{symbol}"
+        else:
+            fyers_sym = f"NSE:{symbol}-EQ"
         q = fyers.quotes([fyers_sym])
         if q and len(q) > 0 and "v" in q[0] and "lp" in q[0]["v"]:
             return float(q[0]["v"]["lp"])
@@ -1042,12 +1056,35 @@ def _run_scanner_pass(
     return results, executed
 
 
+def normalize_option_contract_symbol(identifier: str) -> str:
+    """Normalize exchange identifiers like OPTIDXBANKNIFTY23-11-2026CE61500.00 to Fyers format."""
+    if not identifier:
+        return ""
+    s = str(identifier).strip()
+    if s.startswith("NSE:") or s.startswith("BSE:"):
+        return s
+    m = re.match(r"^OPT(?:IDX|STK)([A-Z&_-]+?)(\d{2})-(\d{2})-(\d{4})(CE|PE)(\d+(?:\.\d+)?)$", s)
+    if m:
+        und, day, mon, yr, opt_type, strike_raw = m.groups()
+        strike = str(int(float(strike_raw)))
+        yr_short = yr[2:]
+        month_names = {
+            "01": "JAN", "02": "FEB", "03": "MAR", "04": "APR",
+            "05": "MAY", "06": "JUN", "07": "JUL", "08": "AUG",
+            "09": "SEP", "10": "OCT", "11": "NOV", "12": "DEC",
+        }
+        mon_str = month_names.get(mon, mon)
+        return f"NSE:{und}{yr_short}{mon_str}{strike}{opt_type}"
+    return s
+
+
 def _evaluate_and_execute_index_plan(
     plan,
     router: ExecutionRouter,
     ledger: Ledger | None,
     *,
     dry_run: bool = False,
+    ignore_market_hours: bool = False,
 ) -> dict | None:
     """Evaluate and route a NIFTY or BANK NIFTY index option plan."""
     if plan is None:
@@ -1069,12 +1106,16 @@ def _evaluate_and_execute_index_plan(
 
     # Guard: Ensure the option contract is a valid exchange-tradable Fyers symbol
     q = plan.option.quote
+    normalized = normalize_option_contract_symbol(q.identifier)
+    if normalized and normalized != q.identifier:
+        q.identifier = normalized
+
     if not (q.identifier.startswith("NSE:") or q.identifier.startswith("BSE:")) or q.last_price <= 0:
         print(f"    SKIPPED: {q.identifier} is not a valid Fyers-tradable contract format")
         return None
 
     now_hm = datetime.now(IST).strftime("%H:%M")
-    if not dry_run and not (MARKET_OPEN <= now_hm < SQUAREOFF_TIME):
+    if not dry_run and not ignore_market_hours and not (MARKET_OPEN <= now_hm < SQUAREOFF_TIME):
         print(f"    SKIPPED: outside active market hours ({now_hm} IST; session is {MARKET_OPEN} - {SQUAREOFF_TIME})")
         return None
 
@@ -1302,10 +1343,10 @@ def scan_and_trade(
             executed_count += count
             results.extend(scan_results)
 
-        # --- index options arm (NIFTY & BANK NIFTY) --------------------------
+        # --- index options arm (NIFTY, BANK NIFTY, SENSEX) -------------------
         if AGENT_TRADE_INDEX_OPTIONS and executed_count < max_trades:
             print(f"\n{'-' * 70}")
-            print(f"  SOURCE: INDEX OPTIONS (NIFTY & BANK NIFTY)")
+            print(f"  SOURCE: INDEX OPTIONS (NIFTY, BANK NIFTY, SENSEX)")
             if dry_run:
                 print("  DRY RUN — nothing reaches the risk kernel or the ledger")
             print(f"{'-' * 70}")

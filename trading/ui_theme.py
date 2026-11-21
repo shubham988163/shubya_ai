@@ -297,19 +297,42 @@ tbody tr:hover td{background:var(--cell)}
 
 
 def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -> str:
-    """The shared header. `active` is "dashboard" or "scanner"."""
+    """The shared institutional header. `active` is "dashboard", "scanner", "forex", "charts", or "target"."""
     def cur(name: str) -> str:
         return ' aria-current="page"' if name == active else ""
     return f"""  <header class="top">
     <div class="top-bar">
       <div class="brand">
-        <div class="mark">F&amp;O</div>
-        <div class="brand-text">
-          <h1>{title}</h1>
-          <div class="win mono" id="{subtitle_id}">…</div>
-        </div>
+        <a href="/" style="text-decoration:none;display:flex;align-items:center;gap:11px">
+          <div class="mark" style="width:36px;height:36px;border-radius:10px;background:linear-gradient(135deg,#06b6d4 0%,#2563eb 50%,#7c3aed 100%);padding:2px;box-shadow:0 0 16px rgba(6,182,212,0.45);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M12 2L2 7L12 12L22 7L12 2Z" fill="#38bdf8"/>
+              <path d="M2 17L12 22L22 17" stroke="#34d399" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+              <path d="M2 12L12 17L22 12" stroke="#60a5fa" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div class="brand-text">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font-size:14.5px;font-weight:900;letter-spacing:0.04em;background:linear-gradient(90deg,#f8fafc,#38bdf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent">SHUBYA AI</span>
+              <span class="badge sm" style="font-size:8.5px;padding:1px 6px;background:rgba(6,182,212,0.12);border-color:rgba(6,182,212,0.35);color:#38bdf8;font-weight:800;letter-spacing:.08em">PRO v2.5</span>
+            </div>
+            <div style="font-size:10.5px;color:var(--ink-3);display:flex;align-items:center;gap:6px;margin-top:1px">
+              <span style="color:var(--ink-2);font-weight:600">{title}</span>
+              <span style="opacity:0.4">•</span>
+              <span class="win mono" id="{subtitle_id}">…</span>
+            </div>
+          </div>
+        </a>
       </div>
       <div class="top-actions">
+        <div class="top-clock hide-mobile" style="display:flex;align-items:center;gap:7px;padding:5px 10px;background:var(--cell);border:1px solid var(--line);border-radius:8px;font-size:11px;font-family:ui-monospace,monospace">
+          <span style="color:var(--good);display:flex;align-items:center;gap:5px;font-weight:700">
+            <span class="led" style="width:6px;height:6px;background:var(--good);box-shadow:0 0 6px var(--good)"></span>
+            <span id="topClockIST">--:--:-- IST</span>
+          </span>
+          <span style="color:var(--ink-3);opacity:0.5">|</span>
+          <span style="color:var(--ink-2)" id="topClockUTC">--:--:-- UTC</span>
+        </div>
         <button class="btn" id="btnAlertToggle" title="Toggle Audio Chimes &amp; Desktop Alerts" onclick="window.ScannerAlerts &amp;&amp; window.ScannerAlerts.toggle()">
           <span id="alertIcon">🔔</span><span class="hide-mobile" id="alertLabel"> Alerts ON</span>
         </button>
@@ -320,12 +343,12 @@ def topbar(title: str, active: str, right: str = "", subtitle_id: str = "win") -
       </div>
     </div>
     <nav class="nav">
-      <a href="/"{cur("dashboard")}>Dashboard</a>
-      <a href="/charts"{cur("charts")} style="color:#38bdf8;font-weight:700">📈 <span class="nav-lbl">Indian Charts</span><span class="nav-sub hide-mobile"> (TradingView)</span></a>
-      <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700">🌐 <span class="nav-lbl">Forex &amp; Crypto</span><span class="nav-sub hide-mobile"> (Delta)</span></a>
-      <a href="/target"{cur("target")} style="color:#10b981;font-weight:700">🎯 <span class="nav-lbl">27K → 1L Target</span></a>
-      <a href="/#agents-desk" style="border-left:1px solid var(--line);color:var(--accent);font-weight:700">🤖 <span class="nav-lbl">4 Agents Desk</span></a>
-      <a href="/fno"{cur("scanner")}>Scanner</a>
+      <a href="/"{cur("dashboard")} style="display:flex;align-items:center;gap:6px">📊 <span class="nav-lbl">Main Terminal</span></a>
+      <a href="/charts"{cur("charts")} style="color:#38bdf8;font-weight:700;display:flex;align-items:center;gap:6px">📈 <span class="nav-lbl">TradingView Charts</span><span class="nav-sub hide-mobile"> (NSE)</span></a>
+      <a href="/forex"{cur("forex")} style="color:#f59e0b;font-weight:700;display:flex;align-items:center;gap:6px">🌐 <span class="nav-lbl">24/7 Forex &amp; Crypto</span><span class="nav-sub hide-mobile"> (Delta)</span></a>
+      <a href="/target"{cur("target")} style="color:#10b981;font-weight:700;display:flex;align-items:center;gap:6px">🎯 <span class="nav-lbl">Milestone Roadmap</span></a>
+      <a href="/#agents-desk" style="border-left:1px solid var(--line);color:var(--accent);font-weight:700;display:flex;align-items:center;gap:6px">🤖 <span class="nav-lbl">4-Agent AI Council</span></a>
+      <a href="/fno"{cur("scanner")} style="display:flex;align-items:center;gap:6px">⚡ <span class="nav-lbl">Options Scanner</span></a>
     </nav>
   </header>"""
 
@@ -778,6 +801,18 @@ window.ScannerAlerts = (function(){
 
   if(window.ScannerAlerts) window.ScannerAlerts.init();
 
+  function updateClocks(){
+    const now = new Date();
+    const ist = now.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const utc = now.toLocaleTimeString('en-GB', { timeZone: 'UTC', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+    const elI = document.getElementById('topClockIST');
+    const elU = document.getElementById('topClockUTC');
+    if(elI) elI.textContent = ist + ' IST';
+    if(elU) elU.textContent = utc + ' UTC';
+  }
+  updateClocks();
+  setInterval(updateClocks, 1000);
+
   async function checkFyers(){
     try{
       const r = await fetch("/api/fyers/status");
@@ -820,6 +855,8 @@ window.ScannerAlerts = (function(){
       }
     }catch(e){}
   }
+  checkFyers();
+  setInterval(checkFyers, 10000);
   checkDelta();
   setInterval(checkDelta, 12000);
 })();

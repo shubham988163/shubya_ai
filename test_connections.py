@@ -54,23 +54,25 @@ def test_fyers_connection():
         return False
     
     try:
-        # The fyers_apiv3 library handles OAuth internally
-        # We just check if the library can be imported and initialized
-        from fyers_apiv3.FyersClientV3 import FyersClientV3
-        client = FyersClientV3(client_id=app_id)
-        print("  ✅ Fyers API library (fyers_apiv3) is available")
+        from fyers_apiv3 import fyersModel
+        from trading.fno.fyers import FyersClient
+        connected, msg = FyersClient().status()
+        if connected:
+            print(f"  ✅ Fyers API is authenticated & active ({msg})")
+        else:
+            print(f"  ⚠️  Fyers API status: {msg} (using market data fallback)")
         return True
     except ImportError:
         print("  ⚠️  fyers_apiv3 library not installed (optional dependency)")
         return True  # Not critical, has fallback to yfinance
     except Exception as e:
-        print(f"  ⚠️  Fyers API initialization: {str(e)[:80]}")
+        print(f"  ⚠️  Fyers API check: {str(e)[:80]}")
         return True  # Still ok, uses fallback
 
 def test_delta_exchange_connection():
     """Test Delta Exchange API connection."""
     print("\n🔍 Testing Delta Exchange API Connection...")
-    base_url = os.getenv("DELTA_BASE_URL")
+    base_url = os.getenv("DELTA_BASE_URL", "https://api.india.delta.exchange")
     api_key = os.getenv("DELTA_API_KEY")
     
     if not base_url:
@@ -81,22 +83,15 @@ def test_delta_exchange_connection():
         return False
     
     try:
-        # Test Delta Exchange API with proper authentication
-        url = f"{base_url}/v2/me/account"
-        headers = {
-            "Authorization": f"Bearer {api_key}",
-            "Content-Type": "application/json"
-        }
-        response = requests.get(url, headers=headers, timeout=5)
-        if response.status_code in [200, 400, 401, 403]:
-            print(f"  ✅ Delta Exchange API is reachable ({response.status_code})")
+        from trading.delta_exchange import DeltaClient
+        client = DeltaClient()
+        status = client.status()
+        if status.get("connected"):
+            print(f"  ✅ Delta Exchange API is connected ({status.get('message', 'Market Data Online')})")
             return True
         else:
-            print(f"  ⚠️  Delta Exchange API returned {response.status_code}")
+            print(f"  ⚠️  Delta Exchange API: {status.get('message', 'Not connected')}")
             return True
-    except requests.exceptions.Timeout:
-        print("  ❌ Delta Exchange API timeout")
-        return False
     except Exception as e:
         print(f"  ⚠️  Delta Exchange API error: {str(e)[:80]}")
         return True

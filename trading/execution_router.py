@@ -356,10 +356,14 @@ class ExecutionRouter:
                 from trading.fno.fyers import FyersClient
                 fyers = FyersClient()
                 sym = signal["symbol"]
-                if "CE" in sym or "PE" in sym or "INDEX" in sym:
-                    fyers_sym = sym if sym.startswith("NSE:") else f"NSE:{sym}"
+                if sym.startswith("NSE:") or sym.startswith("BSE:"):
+                    fyers_sym = sym
+                elif "SENSEX" in sym:
+                    fyers_sym = f"BSE:{sym}"
+                elif "CE" in sym or "PE" in sym or "INDEX" in sym:
+                    fyers_sym = f"NSE:{sym}"
                 else:
-                    fyers_sym = f"NSE:{sym}-EQ" if not sym.startswith("NSE:") else sym
+                    fyers_sym = f"NSE:{sym}-EQ"
                 q = fyers.quotes([fyers_sym])
                 if q and len(q) > 0 and "v" in q[0] and "lp" in q[0]["v"]:
                     ltp = float(q[0]["v"]["lp"])

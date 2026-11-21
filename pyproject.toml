@@ -49,6 +49,7 @@ include = ["tradingagents*", "cli*"]
 cli = ["static/*"]
 
 [tool.pytest.ini_options]
+pythonpath = ["."]
 testpaths = ["tests", "trading/tests"]
 addopts = "-ra --strict-markers"
 markers = [

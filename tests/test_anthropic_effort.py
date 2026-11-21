@@ -8,6 +8,8 @@ support automatically.
 
 import pytest
 
+pytest.importorskip("langchain_anthropic")
+
 from tradingagents.llm_clients import anthropic_client as mod
 
 

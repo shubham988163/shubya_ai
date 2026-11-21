@@ -34,6 +34,18 @@ FOREX_WATCHLIST = [
     "ADAUSD",     # Cardano / USD Perpetual
 ]
 
+# Official Delta Exchange India product specifications (contract unit values)
+CONTRACT_SPECS: dict[str, dict[str, Any]] = {
+    "BTCUSD": {"contract_value": 0.001, "product_id": 27, "unit": "BTC"},
+    "ETHUSD": {"contract_value": 0.01, "product_id": 3136, "unit": "ETH"},
+    "SOLUSD": {"contract_value": 1.0, "product_id": 14823, "unit": "SOL"},
+    "XAUTUSD": {"contract_value": 0.001, "product_id": 131253, "unit": "XAUT"},
+    "XRPUSD": {"contract_value": 1.0, "product_id": 14969, "unit": "XRP"},
+    "DOGEUSD": {"contract_value": 100.0, "product_id": 14745, "unit": "DOGE"},
+    "BNBUSD": {"contract_value": 0.1, "product_id": 15042, "unit": "BNB"},
+    "ADAUSD": {"contract_value": 1.0, "product_id": 16614, "unit": "ADA"},
+}
+
 POSITIONS_FILE = PROJECT_ROOT / "data" / "forex_positions.json"
 
 
@@ -222,6 +234,34 @@ class DeltaClient:
         with open(POSITIONS_FILE, "w", encoding="utf-8") as f:
             json.dump(positions, f, indent=2)
 
+    def to_contracts(self, symbol: str, raw_size: float) -> int:
+        """Convert continuous asset units (e.g. BTC, ETH) into integer Delta Exchange contracts."""
+        spec = CONTRACT_SPECS.get(symbol.upper(), {})
+        cval = float(spec.get("contract_value", 1.0))
+        return max(1, int(round(raw_size / cval)))
+
+    def _close_live_position(self, symbol: str, side: str, contracts: int) -> dict[str, Any]:
+        """Send a reduce_only market order to close a live position on Delta Exchange."""
+        exit_side = "sell" if side in ("BUY", "LONG") else "buy"
+        path = "/v2/orders"
+        body = {
+            "product_symbol": symbol,
+            "size": max(1, int(contracts)),
+            "side": exit_side,
+            "order_type": "market_order",
+            "reduce_only": True,
+        }
+        body_str = json.dumps(body)
+        headers = self._auth_headers("POST", path, body_str)
+        try:
+            resp = self.session.post(f"{self.base_url}{path}", data=body_str, headers=headers, timeout=10)
+            if resp.status_code in (200, 201):
+                return {"ok": True, "result": resp.json().get("result", {})}
+            else:
+                return {"ok": False, "error": f"Delta close error ({resp.status_code}): {resp.text}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
     def execute_trade(
         self,
         symbol: str,
@@ -236,12 +276,14 @@ class DeltaClient:
         """Execute a trade in either paper or live mode."""
         side = side.upper()
         trade_id = int(time.time() * 1000)
+        contracts = self.to_contracts(symbol, size)
 
         trade_record = {
             "id": trade_id,
             "symbol": symbol,
             "side": side,
             "size": size,
+            "contracts": contracts,
             "entry_price": price,
             "stop_loss": stop_loss,
             "initial_stop": stop_loss,
@@ -269,7 +311,7 @@ class DeltaClient:
         path = "/v2/orders"
         body = {
             "product_symbol": symbol,
-            "size": int(size),
+            "size": contracts,
             "side": "buy" if side in ("BUY", "LONG") else "sell",
             "order_type": "market_order",
         }
@@ -282,6 +324,9 @@ class DeltaClient:
                 live_id = res_data.get("id") or trade_id
                 trade_record["id"] = live_id
                 trade_record["live_order"] = res_data
+                positions = self._load_paper_positions()
+                positions.append(trade_record)
+                self._save_paper_positions(positions)
                 return {"ok": True, "trade_id": live_id, "mode": "live", "trade": trade_record}
             else:
                 return {"ok": False, "reason": f"Delta order error ({resp.status_code}): {resp.text}"}
@@ -341,6 +386,9 @@ class DeltaClient:
                     pnl = (sl - entry) * p["size"]
                     pnl_pct = ((sl - entry) / entry) * 100
                     updated = True
+                    if p.get("mode") == "live":
+                        live_contracts = p.get("contracts") or self.to_contracts(sym, p["size"])
+                        self._close_live_position(sym, side, live_contracts)
                 elif curr >= tg:
                     p["status"] = "CLOSED"
                     p["exit_reason"] = "Target hit"
@@ -349,6 +397,9 @@ class DeltaClient:
                     pnl = (tg - entry) * p["size"]
                     pnl_pct = ((tg - entry) / entry) * 100
                     updated = True
+                    if p.get("mode") == "live":
+                        live_contracts = p.get("contracts") or self.to_contracts(sym, p["size"])
+                        self._close_live_position(sym, side, live_contracts)
             else:
                 pnl = (entry - curr) * p["size"]
                 pnl_pct = ((entry - curr) / entry) * 100
@@ -372,6 +423,9 @@ class DeltaClient:
                     pnl = (entry - sl) * p["size"]
                     pnl_pct = ((entry - sl) / entry) * 100
                     updated = True
+                    if p.get("mode") == "live":
+                        live_contracts = p.get("contracts") or self.to_contracts(sym, p["size"])
+                        self._close_live_position(sym, side, live_contracts)
                 elif curr <= tg:
                     p["status"] = "CLOSED"
                     p["exit_reason"] = "Target hit"
@@ -380,6 +434,9 @@ class DeltaClient:
                     pnl = (entry - tg) * p["size"]
                     pnl_pct = ((entry - tg) / entry) * 100
                     updated = True
+                    if p.get("mode") == "live":
+                        live_contracts = p.get("contracts") or self.to_contracts(sym, p["size"])
+                        self._close_live_position(sym, side, live_contracts)
 
             p["pnl"] = round(pnl, 2)
             p["pnl_pct"] = round(pnl_pct, 2)
@@ -399,6 +456,9 @@ class DeltaClient:
                 p["exit_reason"] = "Manual square-off"
                 p["exit_price"] = p.get("current_price", p["entry_price"])
                 p["exit_time"] = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                if p.get("mode") == "live":
+                    live_contracts = p.get("contracts") or self.to_contracts(p["symbol"], p["size"])
+                    self._close_live_position(p["symbol"], p["side"], live_contracts)
                 matched = True
                 break
         if matched:

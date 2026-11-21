@@ -14,6 +14,9 @@ Two pieces verified:
 import os
 
 import pytest
+
+pytest.importorskip("langchain_openai")
+
 from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.prompt_values import ChatPromptValue
 from pydantic import BaseModel

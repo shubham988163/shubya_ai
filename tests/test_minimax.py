@@ -8,6 +8,9 @@ requests so M2.x reasoning models put their <think> block into
 import os
 
 import pytest
+
+pytest.importorskip("langchain_openai")
+
 from langchain_core.messages import HumanMessage
 from pydantic import BaseModel
 

@@ -13,7 +13,10 @@ load_dotenv(PROJECT_ROOT / ".env")
 # --- Trading universe ---
 # Core watchlist. This is both what the strategy engine scans and what the
 # pre-market agent is shown, so it is the only set of names the agent can block.
-WATCHLIST = ["RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "SBIN"]
+WATCHLIST = [
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS", "SBIN",
+    "BHARTIARTL", "AXISBANK", "KOTAKBANK", "BAJFINANCE"
+]
 
 # Full scan universe for the strategy engine — Nifty 50 constituents.
 # Index composition changes ~semi-annually; edit as needed.
@@ -125,7 +128,7 @@ AGENT_MAX_TOKENS = 16000
 SUPERVISOR_POLL_SECONDS = 5     # how often the async supervisor checks for new trades
 
 # Multi-Agent stock evaluator parameters
-AGENT_MIN_CONVICTION = 7        # Conviction score out of 10 required to execute a trade
+AGENT_MIN_CONVICTION = 6        # Conviction score out of 10 required to execute a trade
 AGENT_MAX_TRADES_PER_SCAN = 3   # Max new trades to execute in a single scan pass
 
 # --- AI agent: the F&O long scanner as a second candidate source ---
@@ -142,10 +145,10 @@ AGENT_SCANNER_ENABLED = True
 # check on the assumption the router is covering it.
 AGENT_SCANNER_STRATEGY_ID = "fno_scanner"
 AGENT_SCANNER_TIERS = ("BUY", "WATCH")   # ("BUY",) would be the BUY picks only
-AGENT_SCANNER_MAX = 3                    # names taken from one scan per pass
+AGENT_SCANNER_MAX = 6                    # names taken from one scan per pass (increased to 6 for broader coverage)
 # Enter only while price is inside the scanner's own entry band (plus chase tolerance).
 AGENT_SCANNER_REQUIRE_ENTRY_BAND = True
-AGENT_SCANNER_CHASE_TOLERANCE_PCT = 0.0075  # 0.75% chase buffer above entry_high (e.g. ₹20 on ₹2500)
+AGENT_SCANNER_CHASE_TOLERANCE_PCT = 0.025   # 2.5% chase buffer above entry_high (allows catching active momentum breakouts)
 AGENT_SCANNER_ENFORCE_200MA = False         # Do not require long-term 200 SMA on intraday momentum scanner breakouts
 MIN_RISK_MULTIPLIER_FLOOR = 0.25            # Floor to prevent total paralysis from missing feeds
 

@@ -89,9 +89,35 @@ class ForexCouncilVerdict(BaseModel):
         description="Final action command: BUY, SELL, or HOLD"
     )
     conviction: int = Field(
-        description="Final conviction score from 1 (lowest) to 10 (highest). Must be >=8 for APPROVE",
+        description="Final conviction score from 1 (lowest) to 10 (highest). Must be >=9 (8.5+ rounded) for APPROVE. Only true A+ setups qualify.",
         ge=1,
         le=10,
+    )
+    predicted_direction: Literal["UPWARD", "DOWNWARD", "SIDEWAYS"] = Field(
+        default="UPWARD",
+        description="Forecasted most probable direction of price movement (UPWARD, DOWNWARD, or SIDEWAYS)",
+    )
+    probability_upward_pct: int = Field(
+        default=50,
+        description="Probability (0-100%) of upward breakout and continuation",
+        ge=0,
+        le=100,
+    )
+    probability_downward_pct: int = Field(
+        default=25,
+        description="Probability (0-100%) of downward breakdown or sharp rejection",
+        ge=0,
+        le=100,
+    )
+    probability_sideways_pct: int = Field(
+        default=25,
+        description="Probability (0-100%) of sideways chop, false breakout, or rangebound consolidation",
+        ge=0,
+        le=100,
+    )
+    news_impact_summary: str = Field(
+        default="Neutral news sentiment; no adverse macro catalysts detected.",
+        description="Summary of live news headlines and how macro catalysts influence directional probability",
     )
     technical_analysis: str = Field(
         description="Technical Analyst View: Evaluation of 9/21 EMA crossover, 200 SMA regime, VWAP slope, ORB breakout, ATR, and RVOL"
@@ -111,27 +137,43 @@ class ForexCouncilVerdict(BaseModel):
 
 
 FOREX_COUNCIL_SYSTEM = """You are the 4 AI Agents Trading Council evaluating 24/7 Forex and Cryptocurrency breakout setups on Delta Exchange.
+You enforce extreme selectivity targeting an institutional 70%+ win-rate edge by filtering out all marginal setups and only approving true "A+" confluence trades.
+
 Your panel consists of 4 distinct specialist personas who debate and reach a binding consensus:
 
 1. Technical Analyst:
-   - Scrutinizes chart structure: 9/21 EMA trend alignment, 200 SMA macro filter, Session VWAP pullback, and 1-hour Opening Range Breakout (ORB).
-   - Validates that volume expansion (RVOL >= 1.2x) and RSI momentum confirm the price move.
+   - Scrutinizes multi-timeframe chart structure: 9/21 EMA trend alignment, 200 SMA macro filter, Session VWAP pullback, and 1-hour Opening Range Breakout (ORB).
+   - STRICT MULTI-TIMEFRAME RULE: 5m/15m breakout MUST align with 1H & Daily trend. Never approve a Long if 1H < 200 SMA; never approve a Short if 1H > 200 SMA.
+   - STRICT INSTITUTIONAL VOLUME: Demands Relative Volume (RVOL >= 2.0x). Breakouts on volume < 2.0x are rejected as unconfirmed retail traps.
+   - DAILY 365 MA WALL: Vetoes any trade within 0.5% proximity of the Daily 365 MA wall.
 
 2. Bullish Researcher:
-   - Formulates the Long breakout thesis based on institutional momentum, trend continuation, positive news catalysts, and upside targets.
+   - Formulates the Long breakout thesis based on institutional momentum, trend continuation, positive news catalysts, and clear upside targets.
+   - Verifies buyer absorption at VWAP and clean separation above the 15m Opening Range high.
 
 3. Bearish Researcher (Devil's Advocate & Trap Specialist):
-   - Actively looks for reasons NOT to take the trade.
+   - Actively hunts for reasons NOT to take the trade.
    - Checks for crypto's #1 killer: **False Breakouts & Liquidity Grabs** (wicks pushing above highs only to trap buyers before a dump).
    - Checks for overhead supply, bearish RSI divergence, negative regulatory or macro headlines, and weekend low-volume chop.
+   - HARD AUTOPSY VETO: Strictly audits recent post-mortem trade lessons. If the setup exhibits any failure pattern logged in recent autopsies, issues an immediate VETO.
 
 4. Trader Decision Agent (Chief Risk Officer & Arbitrator):
    - Synthesizes the debate. Enforces strict asymmetric Risk-to-Reward (minimum 1:2 R:R).
-   - Ensures the stop loss is placed at a strict structural level (swing point or ATR cushion).
+   - SESSION TIMING: Prioritizes peak liquidity hours (London & New York Overlap: 12:00-17:00 UTC / 17:30-22:30 IST). During off-peak or weekend chop, raises scrutiny.
+   - Ensures the stop loss is placed at a strict structural swing point or ATR cushion.
    - Issues the binding verdict:
-     * APPROVE (Action: BUY or SELL, Conviction: 8-10): All 4 pillars pass, breakout is genuine, high probability.
-     * CAUTION (Action: HOLD, Conviction: 5-7): Mixed signals or choppy market; wait for retest.
-     * VETO (Action: HOLD, Conviction: 1-4): Clear liquidity trap, false breakout, counter-trend, or severe opposing news.
+     * APPROVE (Action: BUY or SELL, Conviction: 9-10 / 8.5+): All 4 pillars pass, institutional RVOL >= 2.0x, multi-timeframe aligned, genuine A+ breakout.
+     * CAUTION (Action: HOLD, Conviction: 5-8): Mixed signals, volume between 1.2x-1.9x, or choppy market; wait for clean retest.
+     * VETO (Action: HOLD, Conviction: 1-4): Clear liquidity trap, false breakout, counter-trend to 1H/Daily, low volume, or severe opposing news.
+
+5. Probabilistic Directional Forecasting Engine:
+   - For every setup, quantify the exact probability distribution across 3 possible market paths (must sum to ~100%):
+     * probability_upward_pct: Probability (0-100%) that the asset drives upward towards profit target.
+     * probability_downward_pct: Probability (0-100%) that the asset breaks down or suffers heavy rejection.
+     * probability_sideways_pct: Probability (0-100%) that the asset gets caught in sideways chop, range trap, or low-volume fakeout.
+   - Assign predicted_direction: 'UPWARD' if probability_upward_pct is dominant, 'DOWNWARD' if probability_downward_pct is dominant, or 'SIDEWAYS' if choppy.
+   - Provide news_impact_summary explaining how current news headlines, articles, or macro events influence this probability.
+   - HIGH PREDICTABILITY RULE: Only approve BUY when probability_upward_pct >= 70% and sideways risk <= 20%. Only approve SELL when probability_downward_pct >= 70% and sideways risk <= 20%. If sideways/trap probability exceeds 30%, issue CAUTION or VETO.
 
 Ground your analysis strictly on the live market facts, quantitative indicators, and real-time headlines provided."""
 
@@ -199,16 +241,30 @@ REAL-TIME NEWS & MACRO SENTIMENT HEADLINES:
 Conduct the 4 AI Agents Debate (Technical Analyst, Bullish Researcher, Bearish Researcher, Trader Decision Agent) and output your structured consensus verdict."""
 
     # Deterministic fallback if Gemini is offline
+    rvol_val = float(setup.get("rvol", 1.0) or 1.0)
     is_approved = quant_score >= 75
+    conv = min(10, max(4, int(quant_score / 10))) if is_approved else 4
+    if quant_score >= 85 and rvol_val >= 2.0:
+        conv = 9
+    up_prob = 75 if (is_approved and side == "BUY") else (15 if (is_approved and side == "SELL") else 35)
+    down_prob = 75 if (is_approved and side == "SELL") else (15 if (is_approved and side == "BUY") else 35)
+    side_prob = 100 - up_prob - down_prob
+    pred_dir = "UPWARD" if up_prob >= 70 else ("DOWNWARD" if down_prob >= 70 else "SIDEWAYS")
+
     fallback = ForexCouncilVerdict(
         symbol=sym,
         verdict="APPROVE" if is_approved else "CAUTION",
         action=side if is_approved else "HOLD",
-        conviction=min(10, max(5, int(quant_score / 10))),
-        technical_analysis=f"Deterministic Quant Analysis: Setup satisfies strategy indicators with score {quant_score}/100.",
+        conviction=conv,
+        predicted_direction=pred_dir,
+        probability_upward_pct=up_prob,
+        probability_downward_pct=down_prob,
+        probability_sideways_pct=side_prob,
+        news_impact_summary="Deterministic Quant Evaluation: Confluence with short-term trend and indicator consensus.",
+        technical_analysis=f"Deterministic Quant Analysis: Setup satisfies strategy indicators with score {quant_score}/100 and RVOL {rvol_val:.1f}x.",
         bull_case=f"Momentum supports {side} with price aligned with short-term EMAs and VWAP.",
-        bear_case="Potential volatility risk; monitor stop-loss strictly.",
-        decision_rationale=f"Quantitative rules {'approve' if is_approved else 'caution'} trade with ${planned_risk_usd:,.2f} risk budget.",
+        bear_case="Potential volatility or resistance risk; monitor structural stop-loss strictly.",
+        decision_rationale=f"Quantitative rules {'approve' if is_approved else 'caution/hold'} trade with ${planned_risk_usd:,.2f} risk budget.",
         recommended_entry=price,
         recommended_stop_loss=sl,
         recommended_target=target,

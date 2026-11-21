@@ -110,6 +110,7 @@ def test_auto_trader_council_veto_blocks_execution(tmp_path):
     client.get_tickers = MagicMock(return_value={"BTCUSD": {"mark_price": 70000.0}})
 
     trader = ForexAutoTrader(client=client)
+    trader.set_council_enabled(True)
     trader.engine.scan_all = MagicMock(return_value=[{
         "symbol": "BTCUSD",
         "side": "BUY",
@@ -152,23 +153,26 @@ def test_auto_trader_council_bypass_toggle(tmp_path):
     client.get_tickers = MagicMock(return_value={"BTCUSD": {"mark_price": 70000.0}})
 
     trader = ForexAutoTrader(client=client)
-    trader.set_council_enabled(False)
-    assert trader.is_council_enabled is False
+    try:
+        trader.set_council_enabled(False)
+        assert trader.is_council_enabled is False
 
-    trader.engine.scan_all = MagicMock(return_value=[{
-        "symbol": "BTCUSD",
-        "side": "BUY",
-        "price": 70000.0,
-        "stop_loss": 69500.0,
-        "target1": 71000.0,
-        "conviction": 9,
-        "score": 90,
-        "reasons": ["ORB high breakout"],
-    }])
+        trader.engine.scan_all = MagicMock(return_value=[{
+            "symbol": "BTCUSD",
+            "side": "BUY",
+            "price": 70000.0,
+            "stop_loss": 69500.0,
+            "target1": 71000.0,
+            "conviction": 9,
+            "score": 90,
+            "reasons": ["ORB high breakout"],
+        }])
 
-    res = trader.run_pass()
-    assert len(res["executed_trades"]) == 1
-    assert len(client.get_positions()) == 1
+        res = trader.run_pass()
+        assert len(res["executed_trades"]) == 1
+        assert len(client.get_positions()) == 1
+    finally:
+        trader.set_council_enabled(True)
 
 
 def test_forex_web_council_endpoints():

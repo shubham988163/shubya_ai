@@ -261,14 +261,14 @@ def test_index_options_execution_and_guards(temp_ledger, monkeypatch):
     )
 
     # 1. Valid plan executes with correct symbol, lot size 65, and option parameters
-    res = _evaluate_and_execute_index_plan(valid_nifty_plan, router, temp_ledger, dry_run=False)
+    res = _evaluate_and_execute_index_plan(valid_nifty_plan, router, temp_ledger, dry_run=False, ignore_market_hours=True)
     assert res is not None
     assert res["executed"] is True
     assert res["symbol"] == "NSE:NIFTY26NOV24500CE"
     assert res["qty"] == 65
 
     # 2. Duplicate NIFTY trade is strictly skipped by deduplication
-    res_dup = _evaluate_and_execute_index_plan(valid_nifty_plan, router, temp_ledger, dry_run=False)
+    res_dup = _evaluate_and_execute_index_plan(valid_nifty_plan, router, temp_ledger, dry_run=False, ignore_market_hours=True)
     assert res_dup is None  # Skipped before routing
 
     # 3. Non-tradeable plan (e.g. no breakout) is skipped

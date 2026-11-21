@@ -72,7 +72,7 @@ def get_lot_size(symbol: str) -> int:
 
 def is_index_symbol(symbol: str) -> bool:
     clean = symbol.upper()
-    return any(x in clean for x in ("NIFTY", "BANKNIFTY", "FINNIFTY", "^NSEI", "^NSEBANK"))
+    return any(x in clean for x in ("NIFTY", "BANKNIFTY", "FINNIFTY", "MIDCPNIFTY", "SENSEX", "BANKEX", "^NSEI", "^NSEBANK", "^BSESN"))
 
 
 def get_fyers_symbol(symbol: str) -> str:
@@ -81,9 +81,39 @@ def get_fyers_symbol(symbol: str) -> str:
         return "NSE:NIFTY50-INDEX"
     if s in ("^NSEBANK", "BANKNIFTY", "BANK NIFTY"):
         return "NSE:NIFTYBANK-INDEX"
-    if s.startswith("NSE:"):
+    if s in ("^BSESN", "SENSEX", "BSE:SENSEX"):
+        return "BSE:SENSEX-INDEX"
+    if s in ("BANKEX", "BSE:BANKEX"):
+        return "BSE:BANKEX-INDEX"
+    if s in ("FINNIFTY", "NIFTY FIN SERVICE"):
+        return "NSE:FINNIFTY-INDEX"
+    if s in ("MIDCPNIFTY", "NIFTY MID SELECT"):
+        return "NSE:MIDCPNIFTY-INDEX"
+    if s.startswith("NSE:") or s.startswith("BSE:"):
         return s
     return f"NSE:{s}-EQ"
+
+
+def normalize_option_symbol(symbol: str) -> str:
+    """Convert raw NSE identifiers (e.g. OPTIDXBANKNIFTY23-11-2026CE61500.00) to Fyers format."""
+    if not symbol:
+        return ""
+    s = str(symbol).strip()
+    if s.startswith("NSE:") or s.startswith("BSE:"):
+        return s
+    m = re.match(r"^OPT(?:IDX|STK)([A-Z&_-]+?)(\d{2})-(\d{2})-(\d{4})(CE|PE)(\d+(?:\.\d+)?)$", s)
+    if m:
+        und, day, mon, yr, opt_type, strike_raw = m.groups()
+        strike = str(int(float(strike_raw)))
+        yr_short = yr[2:]
+        month_names = {
+            "01": "JAN", "02": "FEB", "03": "MAR", "04": "APR",
+            "05": "MAY", "06": "JUN", "07": "JUL", "08": "AUG",
+            "09": "SEP", "10": "OCT", "11": "NOV", "12": "DEC",
+        }
+        mon_str = month_names.get(mon, mon)
+        return f"NSE:{und}{yr_short}{mon_str}{strike}{opt_type}"
+    return s
 
 
 def build_option_order_from_plan(
@@ -144,7 +174,7 @@ def build_option_order_from_plan(
     if target_premium <= premium:
         target_premium = round(premium + 2 * max(0.5, premium - stop_premium), 2)
 
-    opt_symbol = q.identifier
+    opt_symbol = normalize_option_symbol(q.identifier)
     return {
         "symbol": opt_symbol,
         "underlying": underlying,

@@ -26,19 +26,19 @@ def temp_positions_file(tmp_path, monkeypatch):
 
 
 def test_equity_and_dynamic_risk_sizing(temp_positions_file):
-    """Verify $100 capital survival math: 2.5% risk ($2.50) and 6% daily limit ($6.00)."""
+    """Verify $90 capital survival math: 2.5% risk ($2.25) and 6% daily limit ($5.40)."""
     trader = ForexAutoTrader()
-    # At initial $100 capital with 0 positions
+    # At initial $90 capital with 0 positions
     eq = trader.get_account_equity()
-    assert eq["starting_capital"] == 100.0
-    assert eq["current_equity"] == 100.0
-    assert eq["dynamic_risk_usd"] == 2.50
-    assert eq["max_daily_loss_usd"] == 6.00
+    assert eq["starting_capital"] == 90.0
+    assert eq["current_equity"] == 90.0
+    assert eq["dynamic_risk_usd"] == 2.25
+    assert eq["max_daily_loss_usd"] == 5.40
     assert eq["progress_pct"] == 0.0
 
 
 def test_compounding_equity_at_scale(temp_positions_file):
-    """Verify dynamic compounding scales risk safely as account grows to $500 and $1,000."""
+    """Verify dynamic compounding scales risk safely as account grows to $490 and $1,000."""
     sample_closed = [
         {"id": 1, "symbol": "BTCUSD", "side": "BUY", "size": 0.1, "entry_price": 70000, "exit_price": 72000, "pnl": 400.0, "status": "CLOSED"},
     ]
@@ -46,15 +46,15 @@ def test_compounding_equity_at_scale(temp_positions_file):
 
     trader = ForexAutoTrader()
     eq = trader.get_account_equity()
-    assert eq["starting_capital"] == 100.0
+    assert eq["starting_capital"] == 90.0
     assert eq["total_realized_pnl"] == 400.0
-    assert eq["current_equity"] == 500.0
-    # At $500 equity: 2.5% risk = $12.50
-    assert eq["dynamic_risk_usd"] == 12.50
-    # At $500 equity: 6% daily loss limit = $30.00
-    assert eq["max_daily_loss_usd"] == 30.00
-    # Progress from 100 to 1000 is (400 / 900) * 100 = 44.4%
-    assert 44.0 <= eq["progress_pct"] <= 45.0
+    assert eq["current_equity"] == 490.0
+    # At $490 equity: 2.5% risk = $12.25
+    assert eq["dynamic_risk_usd"] == 12.25
+    # At $490 equity: 6% daily loss limit = $29.40
+    assert eq["max_daily_loss_usd"] == 29.40
+    # Progress from 90 to 1000 is (400 / 910) * 100 = 43.96%
+    assert 43.0 <= eq["progress_pct"] <= 45.0
 
 
 def test_post_trade_autopsy_reflection():

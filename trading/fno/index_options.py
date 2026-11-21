@@ -32,7 +32,7 @@ from trading.fno.models import MarketContext
 # The index needs a cleaner break than a stock: with no volume to confirm it,
 # structure has to carry more weight.
 BREAKOUT_BUFFER_ATR = 0.10
-EXTENDED_ATR = 1.25
+EXTENDED_ATR = 2.50
 
 
 @dataclass
@@ -119,6 +119,8 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
                                  & (after.iloc[1:]["Close"] < or_low)] if len(after) > 1 else after.iloc[0:0]
         retested = not touched.empty
         extended = breakout and (or_low - spot) > EXTENDED_ATR * atr
+        if extended and ema_f and ema_s and ema_f < ema_s and abs(spot - ema_f) <= 0.80 * atr:
+            extended = False
 
         plan = IndexPlan(spot=spot, or_high=or_high, or_low=or_low, atr=atr,
                          ema_fast=ema_f, ema_slow=ema_s,
@@ -152,9 +154,15 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
         if ema_f and ema_s and ema_f > ema_s:
             plan.rejections.append("the 20 EMA is above the 50 EMA — trend does not support a short")
 
-        entry_high, entry_low = or_low, or_low - 0.40 * atr
         stop_base = (float(touched["High"].max()) if retested
                      else float(after["High"].iloc[0]) if len(after) else or_high)
+        if spot < or_low - 0.40 * atr:
+            entry_high = spot + 0.15 * atr
+            entry_low = min(or_low, spot - 0.40 * atr)
+            if ema_f:
+                stop_base = max(stop_base, ema_f + 0.25 * atr)
+        else:
+            entry_high, entry_low = or_low, or_low - 0.40 * atr
         stop = stop_base + C.SL_BUFFER_ATR * atr
         entry = max(min(spot, entry_high), entry_low)
         risk = stop - entry
@@ -187,6 +195,8 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
                              & (after.iloc[1:]["Close"] > or_high)] if len(after) > 1 else after.iloc[0:0]
     retested = not touched.empty
     extended = breakout and (spot - or_high) > EXTENDED_ATR * atr
+    if extended and ema_f and ema_s and ema_f > ema_s and abs(spot - ema_f) <= 0.80 * atr:
+        extended = False
 
     plan = IndexPlan(spot=spot, or_high=or_high, or_low=or_low, atr=atr,
                      ema_fast=ema_f, ema_slow=ema_s,
@@ -228,9 +238,15 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
                                "not support a long")
 
     # Levels, on the same rules the stock setups use.
-    entry_low, entry_high = or_high, or_high + 0.40 * atr
     stop_base = (float(touched["Low"].min()) if retested
                  else float(after["Low"].iloc[0]) if len(after) else or_low)
+    if spot > or_high + 0.40 * atr:
+        entry_low = max(or_high, spot - 0.40 * atr)
+        entry_high = spot + 0.15 * atr
+        if ema_f:
+            stop_base = min(stop_base, ema_f - 0.25 * atr)
+    else:
+        entry_low, entry_high = or_high, or_high + 0.40 * atr
     stop = stop_base - C.SL_BUFFER_ATR * atr
     entry_low = max(entry_low, stop + C.ENTRY_FLOOR_ATR * atr)
     entry = min(max(spot, entry_low), entry_high)

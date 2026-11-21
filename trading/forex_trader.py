@@ -52,7 +52,7 @@ class ForexAutoTrader:
             "use_council": True,
             "min_conviction": 8,
             "max_open_positions": 2,
-            "starting_capital_usd": 100.0,
+            "starting_capital_usd": 90.0,
             "target_milestone_usd": 1000.0,
             "risk_pct_per_trade": 2.5,
             "max_daily_loss_pct": 6.0,
@@ -69,8 +69,8 @@ class ForexAutoTrader:
         return default_config
 
     def get_account_equity(self) -> dict[str, float]:
-        """Calculate live equity, progress, and dynamic risk parameters for the $100 -> $1,000 Challenge."""
-        starting_capital = float(self.config.get("starting_capital_usd", 100.0))
+        """Calculate live equity, progress, and dynamic risk parameters for the $90 -> $1,000 Challenge."""
+        starting_capital = float(self.config.get("starting_capital_usd", 90.0))
         all_pos = self.client.get_all_positions()
         total_realized = sum(float(p.get("pnl") or 0.0) for p in all_pos if p.get("status") == "CLOSED")
         open_pos = [p for p in all_pos if p.get("status") == "OPEN"]
@@ -186,8 +186,12 @@ class ForexAutoTrader:
             reason = f"Survival Circuit Breaker: Daily loss limit hit (${daily_pnl:.2f} <= -${max_daily_loss:.2f}). Standing down to preserve capital."
             status_result["state"] = "daily_loss_limit_hit"
             status_result["rejections"].append(reason)
-            self._log(f"[-] {reason}")
+            if not getattr(self, "_cb_logged", False):
+                self._log(f"[-] {reason}")
+                self._cb_logged = True
             return status_result
+        else:
+            self._cb_logged = False
 
         # 3. Check maximum open positions cap
         max_open = int(self.config.get("max_open_positions", 2))
@@ -203,8 +207,25 @@ class ForexAutoTrader:
             status_result["state"] = "no_setups"
             return status_result
 
-        min_conviction = int(self.config.get("min_conviction", 8))
+        min_conviction = float(self.config.get("min_conviction", 8.5))
+        min_rvol = float(self.config.get("min_rvol", 2.0))
         risk_budget = eq["dynamic_risk_usd"]
+
+        # Peak session liquidity filter: London & New York overlap (12:00-17:00 UTC / 17:30-22:30 IST)
+        if self.config.get("peak_session_only", True):
+            from datetime import timezone
+            utc_hour = datetime.now(timezone.utc).hour
+            utc_hours = self.config.get("peak_session_utc_hours", [12, 17])
+            if not (utc_hours[0] <= utc_hour < utc_hours[1]):
+                reason = f"Institutional Liquidity Gate: Outside peak London/NY overlap (17:30-22:30 IST / 12:00-17:00 UTC). Standing down to prevent low-liquidity chop."
+                status_result["state"] = "off_peak_liquidity"
+                status_result["rejections"].append(reason)
+                if not getattr(self, "_offpeak_logged", False):
+                    self._log(f"[-] {reason}")
+                    self._offpeak_logged = True
+                return status_result
+            else:
+                self._offpeak_logged = False
 
         active_symbols = {p["symbol"] for p in open_positions}
 
@@ -222,11 +243,36 @@ class ForexAutoTrader:
 
         for s in setups:
             sym = s["symbol"]
-            conv = s["conviction"]
+            conv = float(s["conviction"])
+            rvol = float(s.get("rvol", 1.0) or 1.0)
 
-            # Filter: Min conviction threshold (8/10+)
+            # Filter 1: Min conviction threshold (8.5/10+ A+ setups)
             if conv < min_conviction:
+                status_result["rejections"].append(f"{sym}: Conviction {conv}/10 < required {min_conviction}/10.")
                 continue
+
+            # Filter 2: Institutional volume surge (RVOL >= 1.8x - 2.0x)
+            if "rvol" in s and rvol < min_rvol:
+                status_result["rejections"].append(f"{sym}: RVOL {rvol:.2f}x < required {min_rvol}x threshold.")
+                continue
+
+            # Filter 2b: Sideways & Low-Volatility Filter Gate
+            if self.config.get("filter_sideways_markets", True) and s.get("market_state") == "SIDEWAYS_CHOP":
+                rej = f"{sym}: Rejected by Sideways Market Gate (ADX={s.get('adx')}, BB_Width={s.get('bb_width')}%, low volatility chop)."
+                status_result["rejections"].append(rej)
+                continue
+
+            # Filter 2c: Order Flow Imbalance & Buyer/Seller Pressure Gate
+            if self.config.get("require_order_flow_imbalance", True) and "buyer_ratio" in s:
+                buyer_ratio = float(s["buyer_ratio"])
+                if s.get("side") == "BUY" and buyer_ratio < 55.0:
+                    rej = f"{sym}: Rejected by Order Flow Gate (Buyer pressure {buyer_ratio:.1f}% < 55% threshold). Waiting for aggressive buyer inflow."
+                    status_result["rejections"].append(rej)
+                    continue
+                elif s.get("side") == "SELL" and buyer_ratio > 45.0:
+                    rej = f"{sym}: Rejected by Order Flow Gate (Seller pressure {100 - buyer_ratio:.1f}% < 55% threshold). Waiting for aggressive seller dump."
+                    status_result["rejections"].append(rej)
+                    continue
 
             # Filter: Deduplication (no duplicate position on the same pair)
             if sym in active_symbols:
@@ -257,8 +303,8 @@ class ForexAutoTrader:
                     f"[4-Agent Council] {sym}: Verdict={council_verdict.verdict} (Conviction: {council_verdict.conviction}/10) | "
                     f"Bearish Trap Check: {council_verdict.bear_case[:80]}..."
                 )
-                if council_verdict.verdict != "APPROVE" or council_verdict.conviction < min_conviction or council_verdict.action != side:
-                    rej = f"4-Agent Council VETO on {sym} ({council_verdict.verdict}, conviction {council_verdict.conviction}/10): {council_verdict.bear_case}"
+                if council_verdict.verdict != "APPROVE" or council_verdict.conviction < min_conviction or council_verdict.action != side or council_verdict.predicted_direction == "SIDEWAYS":
+                    rej = f"4-Agent Council VETO on {sym} ({council_verdict.verdict}, conviction {council_verdict.conviction}/10, dir: {council_verdict.predicted_direction}): {council_verdict.bear_case}"
                     status_result["rejections"].append(rej)
                     self._log(f"[-] {rej}")
                     continue

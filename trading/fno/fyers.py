@@ -43,7 +43,9 @@ INDEX_SYMBOLS = {
 }
 
 _QUOTES_CACHE: dict[str, tuple[float, list[dict]]] = {}
-_QUOTES_CACHE_TTL = 1.5  # seconds (ultra-fast for trailing stops, well within Fyers 10 req/sec limit)
+_QUOTES_CACHE_TTL = 3.0  # seconds (ultra-fast for trailing stops, protects 5000/day limit)
+_HISTORY_CACHE: dict[tuple, tuple[float, list[dict]]] = {}
+_HISTORY_CACHE_TTL = 45.0  # seconds (preserves 5000/day daily Fyers quota)
 
 
 def _quotes_from_yfinance(symbols: list[str]) -> list[dict]:
@@ -169,16 +171,21 @@ def load_token() -> tuple[str | None, dict | None]:
     return None, None
 
 _LIVE_STREAM_LTP: dict[str, tuple[float, float]] = {}
+_LIVE_STREAM_QUOTES: dict[str, tuple[float, dict]] = {}
 
 
 def format_fyers_symbol(s: str) -> str:
     clean = s.strip()
-    if clean.startswith("NSE:") or clean.startswith("MCX:"):
+    if clean.startswith("NSE:") or clean.startswith("BSE:") or clean.startswith("MCX:"):
         return clean
     if clean in ("NIFTY", "NIFTY50", "NIFTY 50", "^NSEI"):
         return "NSE:NIFTY50-INDEX"
     if clean in ("BANKNIFTY", "BANK NIFTY", "^NSEBANK"):
         return "NSE:NIFTYBANK-INDEX"
+    if clean in ("SENSEX", "^BSESN"):
+        return "BSE:SENSEX-INDEX"
+    if "SENSEX" in clean:
+        return f"BSE:{clean}"
     if "CE" in clean or "PE" in clean or "OPT" in clean:
         return f"NSE:{clean}"
     return f"NSE:{clean}-EQ"
@@ -194,6 +201,7 @@ class FyersStreamManager:
     def __init__(self):
         self._ws = None
         self._connected = False
+        self._connected_event = threading.Event()
         self._subscribed: set[str] = set()
         self._thread: threading.Thread | None = None
 
@@ -218,6 +226,7 @@ class FyersStreamManager:
 
                 def on_connect():
                     self._connected = True
+                    self._connected_event.set()
                     if self._subscribed:
                         try:
                             self._ws.subscribe(symbols=list(self._subscribed), data_type="SymbolUpdate")
@@ -227,13 +236,13 @@ class FyersStreamManager:
                 def on_message(message):
                     if isinstance(message, dict) and "symbol" in message and "ltp" in message:
                         sym = str(message["symbol"]).strip()
-                        raw = sym.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+                        raw = sym.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
                         try:
                             ltp = float(message["ltp"])
                             now = time.time()
-                            _LIVE_STREAM_LTP[sym] = (now, ltp)
-                            _LIVE_STREAM_LTP[raw] = (now, ltp)
-                            _LIVE_STREAM_LTP[f"NSE:{raw}"] = (now, ltp)
+                            for k in (sym, raw, f"NSE:{raw}", f"BSE:{raw}"):
+                                _LIVE_STREAM_LTP[k] = (now, ltp)
+                                _LIVE_STREAM_QUOTES[k] = (now, message)
                         except (ValueError, TypeError):
                             pass
 
@@ -242,6 +251,7 @@ class FyersStreamManager:
 
                 def on_close(msg):
                     self._connected = False
+                    self._connected_event.clear()
 
                 self._ws = data_ws.FyersDataSocket(
                     access_token=full_token,
@@ -256,6 +266,7 @@ class FyersStreamManager:
                 self._ws.connect()
             except Exception:
                 self._connected = False
+                self._connected_event.clear()
 
         self._thread = threading.Thread(target=_run, daemon=True, name="FyersWebSocketStream")
         self._thread.start()
@@ -265,27 +276,55 @@ class FyersStreamManager:
             return
         formatted = [format_fyers_symbol(s) for s in symbols]
         new_syms = [s for s in formatted if s not in self._subscribed]
-        if not new_syms:
-            return
-        self._subscribed.update(new_syms)
-        if self._connected and self._ws:
+        self._subscribed.update(formatted)
+        if not self._connected:
+            self.start()
+            self._connected_event.wait(timeout=3.5)
+        if self._connected and self._ws and new_syms:
             try:
                 self._ws.subscribe(symbols=new_syms, data_type="SymbolUpdate")
             except Exception:
                 pass
-        else:
-            self.start()
 
-    def get_ltp(self, symbol: str, max_age_secs: float = 30.0) -> float | None:
-        clean = symbol.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+    def get_ltp(self, symbol: str, max_age_secs: float = 3600.0) -> float | None:
+        clean = symbol.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
         formatted = format_fyers_symbol(symbol)
         now = time.time()
-        for k in (formatted, symbol, clean, f"NSE:{clean}"):
+        for k in (formatted, symbol, clean, f"NSE:{clean}", f"BSE:{clean}"):
             if k in _LIVE_STREAM_LTP:
                 ts, ltp = _LIVE_STREAM_LTP[k]
                 if (now - ts) <= max_age_secs:
                     return ltp
         return None
+
+    def get_quote(self, symbol: str, max_age_secs: float = 3600.0) -> dict | None:
+        ltp = self.get_ltp(symbol, max_age_secs=max_age_secs)
+        if ltp is None or ltp <= 0:
+            return None
+        formatted = format_fyers_symbol(symbol)
+        clean = symbol.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+        msg = {}
+        for k in (formatted, symbol, clean, f"NSE:{clean}", f"BSE:{clean}"):
+            if k in _LIVE_STREAM_QUOTES:
+                _, msg = _LIVE_STREAM_QUOTES[k]
+                break
+        return {
+            "n": formatted,
+            "s": "ok",
+            "v": {
+                "symbol": formatted,
+                "lp": ltp,
+                "open_price": float(msg.get("open_price", ltp)),
+                "high_price": float(msg.get("high_price", ltp)),
+                "low_price": float(msg.get("low_price", ltp)),
+                "prev_close_price": float(msg.get("prev_close_price", ltp)),
+                "ch": float(msg.get("ch", 0.0)),
+                "chp": float(msg.get("chp", 0.0)),
+                "volume": float(msg.get("vol_traded_today", msg.get("volume", 0))),
+                "bid": float(msg.get("bid_price", 0.0)),
+                "ask": float(msg.get("ask_price", 0.0)),
+            }
+        }
 
 
 class FyersClient:
@@ -388,7 +427,13 @@ class FyersClient:
         return False, f"Fyers not connected — click to connect: {auth_url}"
 
     def history(self, symbol: str, resolution: str = "5", days: int = 5) -> list[dict]:
-        """Fetch historical candles."""
+        """Fetch historical candles with caching to protect daily API limits."""
+        cache_key = (symbol, str(resolution), int(days))
+        now_ts = time.time()
+        cached = _HISTORY_CACHE.get(cache_key)
+        if cached and (now_ts - cached[0]) < _HISTORY_CACHE_TTL:
+            return cached[1]
+
         # 1. Direct model query
         model = self._get_direct_model()
         if model:
@@ -424,6 +469,7 @@ class FyersClient:
                             "close": c[4],
                             "volume": c[5],
                         })
+                _HISTORY_CACHE[cache_key] = (now_ts, out)
                 return out
             elif isinstance(res, dict) and res.get("s") == "error":
                 raise FyersError(res.get("message") or "Fyers history error")
@@ -435,7 +481,9 @@ class FyersClient:
                                  {"symbol": symbol, "resolution": resolution, "days": days})
                 if data.get("error"):
                     raise FyersError(str(data["error"]))
-                return data.get("candles") or []
+                candles = data.get("candles") or []
+                _HISTORY_CACHE[cache_key] = (now_ts, candles)
+                return candles
             except Exception:
                 pass
         return []
@@ -452,16 +500,48 @@ class FyersClient:
         if cached and (now - cached[0]) < _QUOTES_CACHE_TTL:
             return cached[1]
 
+        # 0. Check live WebSocket stream first (Zero REST API quota consumption)
+        stream = FyersStreamManager.get_instance()
+        stream.subscribe(symbols)
+
+        stream_quotes = []
+        missing = []
+        for s in symbols:
+            q = stream.get_quote(s)
+            if q:
+                stream_quotes.append(q)
+            else:
+                missing.append(s)
+
+        if not missing and stream_quotes:
+            _QUOTES_CACHE[sym_str] = (now, stream_quotes)
+            return stream_quotes
+
         # 1. Direct model query
         model = self._get_direct_model()
-        if model:
+        if model and missing:
+            missing_sym_str = ",".join(sorted(set(missing)))
             try:
-                res = model.quotes({"symbols": sym_str})
+                res = model.quotes({"symbols": missing_sym_str})
                 if isinstance(res, dict) and res.get("s") == "ok" and "d" in res and res["d"]:
-                    _QUOTES_CACHE[sym_str] = (now, res["d"])
-                    return res["d"]
+                    combined = stream_quotes + res["d"]
+                    _QUOTES_CACHE[sym_str] = (now, combined)
+                    return combined
             except Exception:
                 pass
+
+        # If direct model failed (e.g. 5,000 requests/day limit reached), give stream ticks a brief window
+        if missing:
+            time.sleep(0.6)
+            for s in list(missing):
+                q = stream.get_quote(s)
+                if q:
+                    stream_quotes.append(q)
+                    missing.remove(s)
+
+        if stream_quotes:
+            _QUOTES_CACHE[sym_str] = (now, stream_quotes)
+            return stream_quotes
 
         # 2. Fallback to yfinance if Fyers limit reached or offline
         fallback_quotes = _quotes_from_yfinance(symbols)
@@ -767,22 +847,28 @@ body{{font-family:system-ui,-apple-system,sans-serif;background:#0d1117;color:#e
             return self._send_html(200, html)
 
     def _send_html(self, code: int, body: str):
-        b = body.encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "text/html; charset=utf-8")
-        self.send_header("Content-Length", str(len(b)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(b)
+        try:
+            b = body.encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            pass
 
     def _send_json(self, code: int, data: dict):
-        b = json.dumps(data, default=str).encode("utf-8")
-        self.send_response(code)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(b)))
-        self.send_header("Cache-Control", "no-store")
-        self.end_headers()
-        self.wfile.write(b)
+        try:
+            b = json.dumps(data, default=str).encode("utf-8")
+            self.send_response(code)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(b)))
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(b)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            pass
 
     def log_message(self, fmt, *args):
         pass

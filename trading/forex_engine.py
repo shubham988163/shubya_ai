@@ -117,6 +117,34 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     df["Vol_Avg"] = v.rolling(window=20, min_periods=5).mean()
     df["RVOL"] = v / df["Vol_Avg"].replace(0, 1.0)
 
+    # 6. ADX (Average Directional Index, 14-period) for Sideways/Chop Detection
+    up_move = h - h.shift(1)
+    down_move = l.shift(1) - l
+    plus_dm = np.where((up_move > down_move) & (up_move > 0), up_move, 0.0)
+    minus_dm = np.where((down_move > up_move) & (down_move > 0), down_move, 0.0)
+    tr_series = df["ATR"].replace(0, 1e-5)
+    plus_di = 100.0 * (pd.Series(plus_dm, index=df.index).rolling(14, min_periods=5).mean() / tr_series)
+    minus_di = 100.0 * (pd.Series(minus_dm, index=df.index).rolling(14, min_periods=5).mean() / tr_series)
+    dx = 100.0 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, 1e-5)
+    df["ADX"] = dx.rolling(14, min_periods=5).mean().fillna(20.0)
+
+    # 7. Bollinger Bands & Bandwidth (20-period, 2-std)
+    sma_20 = c.rolling(20, min_periods=5).mean()
+    std_20 = c.rolling(20, min_periods=5).std().fillna(0)
+    upper_bb = sma_20 + (2.0 * std_20)
+    lower_bb = sma_20 - (2.0 * std_20)
+    df["BB_Width"] = ((upper_bb - lower_bb) / sma_20.replace(0, 1.0)) * 100.0
+
+    # 8. Order Flow Imbalance & Buyer/Seller Volume Pressure
+    # Candle volume split: Buyers push from Low to Close; Sellers push from High to Close
+    candle_range = (h - l).replace(0, 1e-5)
+    buyer_pressure_ratio = ((c - l) / candle_range).clip(0.0, 1.0)
+    df["Buyer_Vol"] = v * buyer_pressure_ratio
+    df["Seller_Vol"] = v * (1.0 - buyer_pressure_ratio)
+    b_vol_sum = df["Buyer_Vol"].rolling(3, min_periods=1).sum()
+    s_vol_sum = df["Seller_Vol"].rolling(3, min_periods=1).sum()
+    df["Buyer_Ratio"] = (b_vol_sum / (b_vol_sum + s_vol_sum).replace(0, 1.0)) * 100.0
+
     return df
 
 
@@ -180,6 +208,28 @@ class ForexEngine:
         is_breakout_long = price >= range_high and trend_up and (or_bias != -1)
         is_breakout_short = price <= range_low and trend_down and (or_bias != 1)
 
+        adx = float(last.get("ADX", 20.0))
+        bb_width = float(last.get("BB_Width", 1.5))
+        buyer_ratio = float(last.get("Buyer_Ratio", 50.0))
+
+        # 4b. Sideways & Low-Volatility Filter (Hard Gate: Stand down during sideways chop)
+        is_sideways = (adx < 20.0) or (bb_width < 1.0 and rvol < 1.5)
+        if is_sideways:
+            logger.info(f"[{symbol}] Sideways/Low-Volatility Filter: ADX={adx:.1f} < 20 or BB_Width={bb_width:.2f}% < 1.0%. Vetoing breakout traps.")
+            is_breakout_long = False
+            is_breakout_short = False
+
+        # 4c. Order Flow Imbalance & Buyer/Seller Dominance Gate
+        # For Longs, require Buyer Ratio >= 55.0% (aggressive buyer presence)
+        # For Shorts, require Buyer Ratio <= 45.0% (aggressive seller presence)
+        if is_breakout_long and buyer_ratio < 55.0:
+            logger.info(f"[{symbol}] Long Breakout VETOED: Buyer volume ratio {buyer_ratio:.1f}% < 55% threshold (lack of buyer pressure).")
+            is_breakout_long = False
+
+        if is_breakout_short and buyer_ratio > 45.0:
+            logger.info(f"[{symbol}] Short Breakdown VETOED: Seller volume ratio {100 - buyer_ratio:.1f}% < 55% threshold (lack of seller pressure).")
+            is_breakout_short = False
+
         # 5. Daily 365 Wall Filter Check
         if is_breakout_long and near_wall(price, d365, "BUY"):
             logger.info(f"[{symbol}] Long Breakout VETOED by Daily 365 MA Wall at ${d365}")
@@ -219,8 +269,11 @@ class ForexEngine:
             score += 20
             reasons.append(f"ORB Breakdown below session Low (${range_low:,.{decimals}f}) with Red Bias")
 
-        if rvol >= 1.5:
-            score += 15
+        if rvol >= 2.0:
+            score += 20
+            reasons.append(f"Institutional Volume Surge ({rvol:.1f}x >= 2.0x threshold)")
+        elif rvol >= 1.5:
+            score += 10
             reasons.append(f"Volume Expansion Surge ({rvol:.1f}x >= 1.5x threshold)")
         elif rvol >= 1.2:
             score += 5
@@ -234,18 +287,26 @@ class ForexEngine:
             reasons.append(f"RSI in bearish momentum zone ({rsi:.1f})")
 
         # 7. Action, Stop Loss & 1:1.5 RR Targets
+        # Gold (XAUTUSD) requires a wider 2.5x ATR structural buffer to absorb wick volatility on Delta
+        atr_mult = 2.5 if symbol == "XAUTUSD" else 1.5
         if is_breakout_long or (trend_up and or_bias == 1):
             side = "BUY"
-            raw_sl = min(range_low, price - 1.5 * atr)
-            raw_sl = max(raw_sl, price - max(0.5 * atr, price * 0.003))
+            if symbol == "XAUTUSD":
+                raw_sl = price - atr_mult * atr
+            else:
+                raw_sl = min(range_low, price - atr_mult * atr)
+                raw_sl = max(raw_sl, price - max(0.5 * atr, price * 0.003))
             stop_loss = round(raw_sl, decimals)
             risk = max(price * 0.003, price - stop_loss)
             target1 = round(price + 1.5 * risk, decimals)  # Default 1:1.5 RR
             target2 = round(price + 2.0 * risk, decimals)
         elif is_breakout_short or (trend_down and or_bias == -1):
             side = "SELL"
-            raw_sl = max(range_high, price + 1.5 * atr)
-            raw_sl = min(raw_sl, price + max(0.5 * atr, price * 0.003))
+            if symbol == "XAUTUSD":
+                raw_sl = price + atr_mult * atr
+            else:
+                raw_sl = max(range_high, price + atr_mult * atr)
+                raw_sl = min(raw_sl, price + max(0.5 * atr, price * 0.003))
             stop_loss = round(raw_sl, decimals)
             risk = max(price * 0.003, stop_loss - price)
             target1 = round(price - 1.5 * risk, decimals)  # Default 1:1.5 RR
@@ -278,6 +339,11 @@ class ForexEngine:
             "reasons": reasons,
             "rvol": round(rvol, 2),
             "vwap": round(vwap, decimals),
+            "adx": round(adx, 1),
+            "bb_width": round(bb_width, 2),
+            "buyer_ratio": round(buyer_ratio, 1),
+            "order_flow": "BUYERS_DOMINANT" if buyer_ratio >= 55.0 else ("SELLERS_DOMINANT" if buyer_ratio <= 45.0 else "BALANCED_CHOP"),
+            "market_state": "SIDEWAYS_CHOP" if is_sideways else "TRENDING_MOMENTUM",
             "timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
 
@@ -350,25 +416,27 @@ class ForexEngine:
         in_range = range_low <= price <= range_high
 
         decimals = 2 if price > 500 else (3 if price > 10 else 4)
+        atr_mult = 2.5 if symbol == "XAUTUSD" else 1.5
 
         if is_breakout_long:
             action = "BUY BREAKOUT"
             action_badge = "bull"
-            sl = round(range_low, decimals)
+            sl = round(price - atr_mult * atr if symbol == "XAUTUSD" else range_low, decimals)
             risk = max(price * 0.003, price - sl)
             target1 = round(price + 1.5 * risk, decimals)
             target2 = round(price + 2.0 * risk, decimals)
         elif is_breakout_short:
             action = "SELL BREAKDOWN"
             action_badge = "bear"
-            sl = round(range_high, decimals)
+            sl = round(price + atr_mult * atr if symbol == "XAUTUSD" else range_high, decimals)
             risk = max(price * 0.003, sl - price)
             target1 = round(price - 1.5 * risk, decimals)
             target2 = round(price - 2.0 * risk, decimals)
         else:
             action = "HOLD / IN-RANGE CONSOLIDATION"
             action_badge = "ok"
-            sl = round(range_low if ema9 > ema21 else range_high, decimals)
+            base_sl = price - atr_mult * atr if ema9 > ema21 else price + atr_mult * atr
+            sl = round(base_sl if symbol == "XAUTUSD" else (range_low if ema9 > ema21 else range_high), decimals)
             risk = max(price * 0.003, abs(price - sl))
             target1 = round(price + 1.5 * risk if ema9 > ema21 else price - 1.5 * risk, decimals)
             target2 = round(price + 2.0 * risk if ema9 > ema21 else price - 2.0 * risk, decimals)
@@ -399,9 +467,12 @@ class ForexEngine:
         else:
             reasons.append(f"Inside Session Range (${range_low:,.{decimals}f} - ${range_high:,.{decimals}f})")
 
-        if rvol >= 1.5:
-            score += 15
-            reasons.append(f"Institutional volume surge ({rvol:.1f}x >= 1.5x)")
+        if rvol >= 2.0:
+            score += 20
+            reasons.append(f"Institutional volume surge ({rvol:.1f}x >= 2.0x)")
+        elif rvol >= 1.5:
+            score += 10
+            reasons.append(f"Volume expansion ({rvol:.1f}x >= 1.5x)")
         elif rvol >= 1.2:
             score += 5
             reasons.append(f"Moderate volume ({rvol:.1f}x)")

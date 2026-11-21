@@ -185,3 +185,97 @@ def test_forex_backtester_execution(mock_delta_client):
     assert "win_rate" in res
     assert "profit_factor" in res
     assert "net_pnl" in res
+
+
+def test_forex_auto_trader_peak_session_hard_gate(mock_delta_client):
+    """Auto-trader must strictly stand down outside London/NY overlap (12-17 UTC)."""
+    engine = ForexEngine(client=mock_delta_client)
+    engine.scan_all = MagicMock(return_value=[{
+        "symbol": "BTCUSD",
+        "side": "BUY",
+        "price": 70000.0,
+        "stop_loss": 69000.0,
+        "target1": 72000.0,
+        "conviction": 9.5,
+        "rvol": 3.0,
+    }])
+
+    trader = ForexAutoTrader(client=mock_delta_client, engine=engine)
+    trader.config["peak_session_only"] = True
+    trader.config["peak_session_utc_hours"] = [12, 17]
+
+    # Mock time outside peak window (e.g. 06:00 UTC / Asian session)
+    with patch("datetime.datetime") as mock_dt:
+        mock_now = MagicMock()
+        mock_now.hour = 6
+        mock_now.strftime.return_value = "2026-11-21 11:30:00"
+        mock_dt.now.return_value = mock_now
+
+        res = trader.run_pass()
+        assert res["state"] == "off_peak_liquidity"
+        assert len(res["executed_trades"]) == 0
+        assert "Outside peak London/NY overlap" in res["rejections"][0]
+
+
+def test_forex_auto_trader_sideways_and_order_flow_filters(mock_delta_client):
+    """Auto-trader must reject sideways chop setups and balanced order flow."""
+    engine = ForexEngine(client=mock_delta_client)
+    trader = ForexAutoTrader(client=mock_delta_client, engine=engine)
+    trader.config["peak_session_only"] = False
+    trader.set_council_enabled(False)
+
+    # 1. Sideways chop setup rejection (ADX < 20 / SIDEWAYS_CHOP)
+    engine.scan_all = MagicMock(return_value=[{
+        "symbol": "BTCUSD",
+        "side": "BUY",
+        "price": 70000.0,
+        "stop_loss": 69000.0,
+        "target1": 72000.0,
+        "conviction": 9.0,
+        "rvol": 2.2,
+        "market_state": "SIDEWAYS_CHOP",
+        "adx": 14.5,
+        "bb_width": 0.6,
+        "buyer_ratio": 65.0,
+    }])
+    res = trader.run_pass()
+    assert len(res["executed_trades"]) == 0
+    assert any("Sideways Market Gate" in r for r in res["rejections"])
+
+    # 2. Balanced order flow rejection (Buyer Ratio 48% < 55% threshold on BUY)
+    engine.scan_all = MagicMock(return_value=[{
+        "symbol": "BTCUSD",
+        "side": "BUY",
+        "price": 70000.0,
+        "stop_loss": 69000.0,
+        "target1": 72000.0,
+        "conviction": 9.0,
+        "rvol": 2.2,
+        "market_state": "TRENDING_MOMENTUM",
+        "adx": 28.0,
+        "bb_width": 2.5,
+        "buyer_ratio": 48.0,
+    }])
+    res = trader.run_pass()
+    assert len(res["executed_trades"]) == 0
+    assert any("Order Flow Gate" in r for r in res["rejections"])
+
+    # 3. Valid trending setup with aggressive buyer order flow (Buyer Ratio 68% >= 55%) -> Approved!
+    engine.scan_all = MagicMock(return_value=[{
+        "symbol": "BTCUSD",
+        "side": "BUY",
+        "price": 70000.0,
+        "stop_loss": 69000.0,
+        "target1": 72000.0,
+        "conviction": 9.0,
+        "rvol": 2.5,
+        "market_state": "TRENDING_MOMENTUM",
+        "adx": 32.0,
+        "bb_width": 3.0,
+        "buyer_ratio": 68.0,
+    }])
+    res = trader.run_pass()
+    assert len(res["executed_trades"]) == 1
+    assert res["executed_trades"][0]["symbol"] == "BTCUSD"
+
+

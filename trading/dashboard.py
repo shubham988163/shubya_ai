@@ -14,6 +14,7 @@ Usage:  python -m trading.dashboard [port]     # default 8080
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import sys
 import threading
@@ -23,7 +24,14 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from zoneinfo import ZoneInfo
 
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 import yfinance as yf
+
+logger = logging.getLogger("dashboard")
 
 from trading import ui_theme
 from trading.config import (
@@ -67,11 +75,24 @@ def _get_batch_ltp(symbols: list[str]) -> dict[str, float]:
         for s in clean_syms:
             s_ltp = stream.get_ltp(s)
             if s_ltp is not None and s_ltp > 0:
-                raw = s.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+                raw = s.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
                 res[raw] = s_ltp
                 res[s] = s_ltp
             else:
                 missing_from_stream.append(s)
+
+        if missing_from_stream:
+            time.sleep(0.2)
+            still_missing = []
+            for s in missing_from_stream:
+                s_ltp = stream.get_ltp(s)
+                if s_ltp is not None and s_ltp > 0:
+                    raw = s.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+                    res[raw] = s_ltp
+                    res[s] = s_ltp
+                else:
+                    still_missing.append(s)
+            missing_from_stream = still_missing
 
         # 2. Only make REST quotes call if any symbol is not yet received via WebSocket
         if missing_from_stream:
@@ -79,12 +100,16 @@ def _get_batch_ltp(symbols: list[str]) -> dict[str, float]:
             fyers_syms = []
             sym_map: dict[str, str] = {}
             for s in missing_from_stream:
-                if s.startswith("NSE:") or s.startswith("MCX:"):
+                if s.startswith("NSE:") or s.startswith("BSE:") or s.startswith("MCX:"):
                     fs = s
                 elif s in ("NIFTY", "NIFTY50", "NIFTY 50", "^NSEI"):
                     fs = "NSE:NIFTY50-INDEX"
                 elif s in ("BANKNIFTY", "BANK NIFTY", "^NSEBANK"):
                     fs = "NSE:NIFTYBANK-INDEX"
+                elif s in ("SENSEX", "^BSESN"):
+                    fs = "BSE:SENSEX-INDEX"
+                elif "SENSEX" in s:
+                    fs = s if s.startswith("BSE:") else f"BSE:{s}"
                 elif "CE" in s or "PE" in s or "OPT" in s:
                     fs = f"NSE:{s}"
                 else:
@@ -96,7 +121,7 @@ def _get_batch_ltp(symbols: list[str]) -> dict[str, float]:
             for q in quotes:
                 if isinstance(q, dict) and "v" in q and "lp" in q["v"]:
                     name = q.get("n", "")
-                    raw = name.replace("NSE:", "").replace("-EQ", "").replace("-INDEX", "")
+                    raw = name.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "")
                     lp = float(q["v"]["lp"])
                     res[raw] = lp
                     res[name] = lp
@@ -104,6 +129,14 @@ def _get_batch_ltp(symbols: list[str]) -> dict[str, float]:
                     res[name.strip()] = lp
                     if name in sym_map:
                         res[sym_map[name]] = lp
+
+        for s in clean_syms:
+            if s not in res:
+                s_ltp = stream.get_ltp(s)
+                if s_ltp is not None and s_ltp > 0:
+                    raw = s.replace("NSE:", "").replace("BSE:", "").replace("-EQ", "").replace("-INDEX", "").strip()
+                    res[raw] = s_ltp
+                    res[s] = s_ltp
     except Exception:
         pass
 
@@ -694,9 +727,29 @@ def _background_position_exit_monitor():
             open_count = len(ledger_inst.open_trades())
             if open_count > 0:
                 _evaluate_open_trades_and_trailing_stops(None, ledger_inst=ledger_inst)
-        except Exception:
+        except BaseException:
             pass
         time.sleep(1.5)
+
+
+def _background_indian_autotrader():
+    """Continuous auto-trader daemon for Indian equities & options during market hours (09:15-15:30 IST, Mon-Fri)."""
+    time.sleep(10)
+    while True:
+        try:
+            now = datetime.now(IST)
+            if now.weekday() < 5:  # Mon-Fri
+                now_hm = now.strftime("%H:%M")
+                if "09:15" <= now_hm <= "15:30":
+                    from trading.agents.agent_trader import scan_and_trade
+                    scan_and_trade(
+                        source="both",
+                        max_trades=3,
+                        dry_run=False,
+                    )
+        except BaseException as exc:
+            logger.warning(f"Indian auto-trader background cycle error: {exc}")
+        time.sleep(60)
 
 
 def _background_forex_autotrader():
@@ -715,7 +768,7 @@ def _background_forex_autotrader():
         try:
             if trader.is_enabled:
                 trader.run_pass()
-        except Exception as exc:
+        except BaseException as exc:
             logger.debug(f"Forex auto-trader background cycle error: {exc}")
         time.sleep(30)
 
@@ -3359,9 +3412,43 @@ async function loadQuotes(){
     const updatedEl = document.getElementById("liveTickerUpdated");
     if(!itemsBox) return;
     if(!res.quotes || !res.quotes.length){
-      itemsBox.innerHTML = '<span class="muted" style="font-size:11.5px">Waiting for real-time market stream…</span>';
+      try {
+        const dRes = await fetch("/api/forex/tickers");
+        const dData = await dRes.json();
+        if(dData.tickers && Object.keys(dData.tickers).length){
+          if(updatedEl) updatedEl.innerHTML = '<span style="color:var(--accent);font-weight:700">🌐 24/7 Delta Live Stream</span> • NSE Closed';
+          itemsBox.innerHTML = "";
+          Object.keys(dData.tickers).forEach(sym => {
+            const t = dData.tickers[sym];
+            const isUp = t.change_24h >= 0;
+            const decimals = t.mark_price > 500 ? 2 : (t.mark_price > 10 ? 3 : 4);
+            const card = el("div", "ticker-item");
+            card.style.cssText = "background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:7px 11px;min-width:142px;flex:0 0 auto;display:flex;flex-direction:column;gap:3px;box-shadow:var(--shadow);cursor:pointer";
+            card.onclick = () => window.location.href = '/forex';
+            card.innerHTML = `
+              <div style="display:flex;justify-content:space-between;align-items:center;gap:6px">
+                <span style="font-weight:800;font-size:11.5px;letter-spacing:.04em;color:var(--ink)">${sym}</span>
+                <span class="badge sm ${isUp ? 'bull' : 'bear'}" style="font-size:9.5px;padding:1px 5px">${isUp ? '+' : ''}${t.change_24h.toFixed(2)}%</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px;margin-top:2px">
+                <span style="font-size:14px;font-weight:800;font-family:ui-monospace,monospace;color:${isUp ? 'var(--up)' : 'var(--down)'}">$${fmt(t.mark_price, decimals)}</span>
+                <span style="font-size:9.5px;color:var(--accent);font-weight:600">24/7 Live</span>
+              </div>
+              <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--ink-3);margin-top:1px">
+                <span>H: $${fmt(t.high, decimals)}</span>
+                <span>L: $${fmt(t.low, decimals)}</span>
+              </div>
+            `;
+            itemsBox.appendChild(card);
+          });
+          return;
+        }
+      } catch(e){}
+      if(updatedEl) updatedEl.textContent = "NSE Market Closed (Weekend) • Stream Idle";
+      itemsBox.innerHTML = '<span class="muted" style="font-size:11.5px;display:flex;align-items:center;gap:6px">⏸️ <b>NSE Live Stream Idle:</b> Indian market is closed (Weekend) or Fyers session is pending. 24/7 Forex &amp; Crypto desk below is active.</span>';
       return;
     }
+    if(updatedEl) updatedEl.textContent = `Live Feed: ${new Date().toLocaleTimeString()}`;
     itemsBox.innerHTML = "";
     res.quotes.forEach(q => {
       const v = q.v || {};
@@ -4616,6 +4703,7 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Content-Type", ctype)
             self.send_header("Content-Length", str(len(body)))
             self.send_header("Cache-Control", "no-store")
+            self.send_header("Permissions-Policy", "unload=(*)")
             self.end_headers()
             self.wfile.write(body)
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
@@ -4656,16 +4744,34 @@ def main(argv: list[str] | None = None):
         print(retention.summary(retention.prune(args.keep_days)))
 
     fyers.start_background_server()
+    try:
+        from trading.fno.fyers import FyersStreamManager
+        stream = FyersStreamManager.get_instance()
+        stream.start()
+        l_init = Ledger()
+        open_syms = [t["symbol"] for t in l_init.open_trades() if t.get("symbol")]
+        if open_syms:
+            stream.subscribe(open_syms)
+    except Exception:
+        pass
     fno_web.CACHE.start()
     t_monitor = threading.Thread(target=_background_position_exit_monitor, daemon=True, name="PositionExitMonitor")
     t_monitor.start()
     t_forex = threading.Thread(target=_background_forex_autotrader, daemon=True, name="ForexAutoTrader")
     t_forex.start()
-    server = fno_web._bind(args.port, Handler, "the dashboard")
-    if server is None:
-        return 1
-    return fno_web._serve_forever(
-        server, f"dashboard: http://localhost:{args.port}")
+    t_indian = threading.Thread(target=_background_indian_autotrader, daemon=True, name="IndianAutoTrader")
+    t_indian.start()
+    while True:
+        try:
+            server = fno_web._bind(args.port, Handler, "the dashboard")
+            if server is not None:
+                fno_web._serve_forever(server, f"dashboard: http://localhost:{args.port}")
+        except KeyboardInterrupt:
+            break
+        except BaseException as exc:
+            logger.warning(f"Dashboard server loop error: {exc}")
+        time.sleep(2)
+    return 0
 
 
 if __name__ == "__main__":

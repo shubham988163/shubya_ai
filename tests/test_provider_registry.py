@@ -4,6 +4,8 @@ Responses API) so a future edit can't silently break one.
 """
 import pytest
 
+pytest.importorskip("langchain_openai")
+
 from tradingagents.llm_clients.openai_client import (
     OPENAI_COMPATIBLE_PROVIDERS,
     DeepSeekChatOpenAI,

@@ -16,7 +16,25 @@ _FOREX_TEMPLATE = r"""<!DOCTYPE html>
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='20' fill='%232F9FDB'/%3E%3Cpath d='M25 65 L45 45 L60 55 L80 30' stroke='%23fff' stroke-width='8' fill='none' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
 <link rel="alternate icon" href="/favicon.ico">
 <title>Forex &amp; Crypto — Delta Exchange 24/7 Trading</title>
-<script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+<script>
+// Prevent third-party scripts from triggering deprecated unload violations in Chromium
+(function(){
+  const _orig = EventTarget.prototype.addEventListener;
+  EventTarget.prototype.addEventListener = function(type, listener, options) {
+    if (type === 'unload') {
+      return _orig.call(this, 'pagehide', listener, options);
+    }
+    return _orig.apply(this, arguments);
+  };
+  try {
+    Object.defineProperty(window, 'onunload', {
+      set: function(fn) { window.addEventListener('pagehide', fn); },
+      get: function() { return null; },
+      configurable: true
+    });
+  } catch(e){}
+})();
+</script>
 <style>
 __THEME__
 .forex-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:12px;margin-top:14px}
@@ -59,6 +77,14 @@ __THEME__
 .council-modal{max-width:980px;margin:16px auto 40px auto;background:var(--card);border:1px solid var(--line-2);border-radius:14px;box-shadow:0 24px 60px rgba(0,0,0,0.8);overflow:hidden;animation:popIn .2s ease-out}
 @keyframes popIn{from{opacity:0;transform:scale(0.97) translateY(12px)}to{opacity:1;transform:scale(1) translateY(0)}}
 
+.desk-tabs{display:flex;align-items:center;gap:4px}
+.desk-tab{background:transparent;border:none;border-bottom:2px solid transparent;color:var(--ink-3);font-size:12px;font-weight:700;padding:12px 18px;cursor:pointer;display:inline-flex;align-items:center;gap:6px;transition:all .15s ease}
+.desk-tab:hover{color:var(--ink);background:rgba(255,255,255,0.02)}
+.desk-tab.active{color:var(--accent);border-bottom-color:var(--accent);background:rgba(47,159,219,0.06)}
+.desk-tab-content{display:none}
+.desk-tab-content.active{display:block;animation:fadeIn .2s ease-in-out}
+@keyframes fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:translateY(0)}}
+
 .agent-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:12px;margin-top:10px}
 .agent-card{background:var(--cell);border:1px solid var(--line);border-radius:10px;padding:14px;display:flex;flex-direction:column;gap:8px}
 .agent-hd{display:flex;align-items:center;justify-content:space-between;border-bottom:1px solid var(--line);padding-bottom:8px}
@@ -72,10 +98,14 @@ __THEME__
   .agent-grid{grid-template-columns:1fr !important}
   .council-modal{margin:10px auto;width:95%}
   .status-box{flex-direction:column;align-items:stretch;gap:8px}
+  #chartContainer{height:420px !important}
+  #chartStrategyOverlay{right:8px !important;left:8px !important;max-width:none !important;min-width:0 !important}
 }
 @media (max-width: 480px){
   .forex-grid{grid-template-columns:1fr !important}
   .levels-grid{grid-template-columns:repeat(2,1fr) !important}
+  #chartContainer{height:360px !important}
+  #chartStrategyOverlay{font-size:10px !important;padding:6px 10px !important}
 }
 </style>
 </head>
@@ -104,36 +134,60 @@ __TOPBAR__
     </div>
   </div>
 
-  <!-- $100 -> $1,000 Compounding Milestone & Survival Tracker -->
+  <!-- $90 -> $1,000 Compounding Milestone & Survival Tracker -->
   <div style="background:linear-gradient(135deg, rgba(16,185,129,0.08) 0%, rgba(99,102,241,0.08) 100%);border:1px solid rgba(16,185,129,0.35);border-radius:12px;padding:16px 20px;margin-top:14px;box-shadow:var(--shadow)">
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px">
       <div style="display:flex;align-items:center;gap:12px">
         <span style="font-size:26px">🎯</span>
         <div>
           <div style="font-size:15px;font-weight:800;color:var(--ink);letter-spacing:0.02em;display:flex;align-items:center;gap:8px">
-            <span>$100 → $1,000 Compounding &amp; Survival Challenge</span>
+            <span>$90 → $1,000 Compounding &amp; Survival Challenge</span>
             <span class="badge sm ok" style="font-weight:700">● 10x Exponential Roadmap</span>
           </div>
           <div style="font-size:11.5px;color:var(--ink-2);margin-top:2px">
-            Dynamic Equity Sizing (2.5% Risk), 6% Daily Circuit Breaker, and AI Post-Mortem Autopsies to survive &amp; scale from $100 to $1,000+.
+            Dynamic Equity Sizing (2.5% Risk), 6% Daily Circuit Breaker, and AI Post-Mortem Autopsies to survive &amp; scale from $90 to $1,000+.
           </div>
         </div>
       </div>
       <div style="display:flex;align-items:center;gap:10px">
         <span class="badge ok" style="font-size:11px;font-weight:700" id="challengeStatusBadge">🛡️ SURVIVAL KERNEL ACTIVE</span>
-        <button class="btn sm" onclick="resetChallenge()" style="background:var(--cell);border-color:var(--line-2);font-size:11px;cursor:pointer" title="Reset paper balance to clean $100 starting state">🔄 Reset to $100</button>
+        <button class="btn sm" onclick="resetChallenge()" style="background:var(--cell);border-color:var(--line-2);font-size:11px;cursor:pointer" title="Reset paper balance to clean $90 starting state">🔄 Reset to $90</button>
       </div>
     </div>
 
-    <!-- Progress Bar to $1,000 -->
-    <div style="margin-top:14px">
-      <div style="display:flex;justify-content:space-between;font-size:11.5px;margin-bottom:6px;font-family:ui-monospace,monospace">
-        <span><b>Initial Capital:</b> $100.00</span>
-        <span style="font-weight:700;color:var(--good)" id="challengeEquityText">Current Equity: $100.00 (+0.0%)</span>
-        <span><b>Milestone 1:</b> $1,000.00 (10x)</span>
+    <!-- 10x Compounding Roadmap Glowing Milestone Bar -->
+    <div style="margin-top:16px;background:var(--cell);border:1px solid var(--line);border-radius:10px;padding:12px 16px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:12px;font-weight:700;color:var(--ink);letter-spacing:0.04em;text-transform:uppercase;display:flex;align-items:center;gap:6px">
+          🚀 10x Exponential Roadmap: <span id="challengeEquityText" style="color:var(--good);font-family:ui-monospace,monospace;font-weight:800">$90.00 (+0.0%)</span>
+        </span>
+        <span style="font-size:11px;color:var(--ink-2);font-family:ui-monospace,monospace" id="compoundingStageLabel">
+          STAGE 0: Base Capital Validation
+        </span>
       </div>
-      <div style="width:100%;height:10px;background:var(--line);border-radius:6px;overflow:hidden;position:relative">
-        <div id="challengeProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg, #10b981 0%, #3b82f6 100%);transition:width 0.4s ease;border-radius:6px"></div>
+
+      <!-- Main Glowing Roadmap Track -->
+      <div style="width:100%;height:16px;background:#080d1a;border:1px solid var(--line-2);border-radius:999px;position:relative;overflow:hidden;box-shadow:inset 0 2px 4px rgba(0,0,0,0.6)">
+        <div id="challengeProgressBar" style="height:100%;width:0%;background:linear-gradient(90deg, #10b981 0%, #06b6d4 40%, #6366f1 80%, #a855f7 100%);box-shadow:0 0 14px rgba(6,182,212,0.6);border-radius:999px;transition:width 0.5s ease"></div>
+      </div>
+
+      <!-- Milestone Diamond Checkpoints -->
+      <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--ink-3);margin-top:7px;font-family:ui-monospace,monospace">
+        <span style="color:var(--good);font-weight:700">◆ $90 (1x Base)</span>
+        <span>◆ $250 (Stage 1)</span>
+        <span>◆ $500 (Stage 2)</span>
+        <span style="color:#a855f7;font-weight:700">★ $1,000 (10x Goal)</span>
+      </div>
+
+      <!-- Daily Drawdown Circuit Breaker Gauge Bar -->
+      <div style="margin-top:12px;padding-top:10px;border-top:1px solid var(--line);display:flex;flex-direction:column;gap:5px">
+        <div style="display:flex;justify-content:space-between;font-size:11px">
+          <span style="color:var(--ink-3);font-weight:600">🛡️ Daily Drawdown Circuit Breaker (Max 6.0% / $5.40):</span>
+          <span id="circuitBreakerText" style="color:var(--good);font-family:ui-monospace,monospace;font-weight:700">0.0% Used ($5.40 Safe Buffer)</span>
+        </div>
+        <div style="width:100%;height:8px;background:#080d1a;border:1px solid var(--line);border-radius:999px;overflow:hidden">
+          <div id="circuitBreakerBar" style="height:100%;width:0%;background:var(--good);transition:width 0.4s ease;border-radius:999px"></div>
+        </div>
       </div>
     </div>
 
@@ -141,11 +195,11 @@ __TOPBAR__
     <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-top:14px">
       <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
         <div style="font-size:10px;text-transform:uppercase;color:var(--ink-3)">Dynamic Risk / Trade</div>
-        <div style="font-size:15px;font-weight:700;color:var(--good);margin-top:2px;font-family:ui-monospace,monospace" id="statDynamicRisk">$2.50 (2.5%)</div>
+        <div style="font-size:15px;font-weight:700;color:var(--good);margin-top:2px;font-family:ui-monospace,monospace" id="statDynamicRisk">$2.25 (2.5%)</div>
       </div>
       <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
         <div style="font-size:10px;text-transform:uppercase;color:var(--ink-3)">Max Daily Loss Limit</div>
-        <div style="font-size:15px;font-weight:700;color:var(--bad);margin-top:2px;font-family:ui-monospace,monospace" id="statDailyLimit">-$6.00 (6.0%)</div>
+        <div style="font-size:15px;font-weight:700;color:var(--bad);margin-top:2px;font-family:ui-monospace,monospace" id="statDailyLimit">-$5.40 (6.0%)</div>
       </div>
       <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
         <div style="font-size:10px;text-transform:uppercase;color:var(--ink-3)">Max Open Concurrent</div>
@@ -396,101 +450,15 @@ __TOPBAR__
     </div>
   </div>
 
-  <!-- Active Trades & Positions -->
-  <div style="margin-top:24px" class="panel">
-    <h2>
-      <span>⚡ Active Forex &amp; Crypto Positions</span>
-      <span class="sub" id="posCount">(0 open)</span>
-    </h2>
-    <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:9px 12px;margin:10px 0 14px 0;display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--ink-2);flex-wrap:wrap;gap:8px">
-      <span>🛡️ <b>Automated Trailing Stop-Loss Active:</b> Locks Breakeven at <b>+1.0R gain</b> (zero risk). At <b>+1.5R</b>, stop-loss dynamically trails mark price with a <b>1.0R buffer</b>.</span>
-      <span class="badge sm ok" style="font-weight:700">● 24/7 Monitored</span>
-    </div>
-    <div style="overflow-x:auto">
-      <table>
-        <thead>
-          <tr>
-            <th>Trade ID</th>
-            <th>Opened</th>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th class="num">Size</th>
-            <th class="num">Entry Price</th>
-            <th class="num">Mark Price</th>
-            <th class="num">P&amp;L ($)</th>
-            <th class="num">P&amp;L (%)</th>
-            <th>Initial SL</th>
-            <th>Active Trailed SL</th>
-            <th>Target</th>
-            <th>Trailing Status</th>
-            <th>Action</th>
-          </tr>
-        </thead>
-        <tbody id="posBody">
-          <tr><td colspan="14" class="empty">No open Forex / Crypto positions. Click "Execute Trade" on any setup below to enter.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- Completed Trades History -->
-  <div style="margin-top:24px" class="panel">
-    <h2>
-      <span>📜 Completed Trades History</span>
-      <span class="sub" id="histCount">(0 closed)</span>
-    </h2>
-    <div style="overflow-x:auto">
-      <table>
-        <thead>
-          <tr>
-            <th>Trade ID</th>
-            <th>Opened Time</th>
-            <th>Closed Time</th>
-            <th>Symbol</th>
-            <th>Side</th>
-            <th class="num">Size</th>
-            <th class="num">Entry Price</th>
-            <th class="num">Exit Price</th>
-            <th class="num">Realized P&amp;L ($)</th>
-            <th class="num">Return (%)</th>
-            <th>Initial SL</th>
-            <th>Exit Reason</th>
-            <th>Executor</th>
-          </tr>
-        </thead>
-        <tbody id="histBody">
-          <tr><td colspan="13" class="empty">Loading trade history…</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </div>
-
-  <!-- AI Post-Trade Autopsy & Continuous Learning Journal -->
-  <div style="margin-top:24px" class="panel">
-    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-      <h2>
-        <span>🧠 Continuous Learning &amp; AI Post-Trade Autopsy Journal</span>
-        <span class="sub" id="reflectionsCount">(0 autopsies recorded)</span>
-      </h2>
-      <span style="font-size:11.5px;color:var(--ink-3)">
-        Every closed trade is autonomously audited for root causes and actionable lessons to prevent repeating mistakes.
-      </span>
-    </div>
-
-    <div id="reflectionsContainer" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(360px,1fr));gap:12px;margin-top:14px">
-      <div class="empty" style="grid-column:1/-1">Loading trade autopsies &amp; continuous learning journal…</div>
-    </div>
-  </div>
-
-  <!-- Multi-Strategy Setups Board -->
+  <!-- 1. Multi-Strategy Setups Board (Actionable Trading Signals right below Chart) -->
   <div style="margin-top:24px">
-    <div style="display:flex;align-items:center;justify-content:space-between">
+    <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div>
-        <h2 style="font-size:14px;letter-spacing:.04em;color:var(--ink);margin:0">
-          🎯 Multi-Strategy Qualifying Signals (ORB + AVWAP + 9/21 EMA + 200 SMA)
+        <h2 style="font-size:14px;letter-spacing:.04em;color:var(--ink);margin:0;display:flex;align-items:center;gap:8px">
+          <span>🎯 Multi-Strategy Qualifying Signals (ORB + AVWAP + 9/21 EMA + 200 SMA)</span>
         </h2>
         <div style="font-size:11.5px;color:var(--ink-3);margin-top:3px">
-          Continuous 24/7 scanning across Bitcoin, Ethereum, Gold (XAUT), Solana, and Major Crypto Perpetuals.
+          Continuous 24/7 institutional scanning across Bitcoin, Ethereum, Gold (XAUT), and Major Perpetuals.
         </div>
       </div>
       <span class="badge sm approve" id="setupCountBadge">0 Setups Available</span>
@@ -501,6 +469,106 @@ __TOPBAR__
         Scanning Delta Exchange for qualifying breakouts…
       </div>
     </div>
+  </div>
+
+  <!-- 2. Fyers & Delta Exchange Style Unified Bottom Trading Console -->
+  <div class="panel" style="margin-top:24px;border:1px solid var(--line);border-radius:12px;overflow:hidden;box-shadow:var(--shadow)">
+    
+    <!-- Tab Navigation Header (Fyers / Delta Exchange style) -->
+    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--cell);border-bottom:1px solid var(--line);padding:0 12px;flex-wrap:wrap;gap:8px">
+      <div class="desk-tabs" style="display:flex;align-items:center;gap:2px">
+        <button class="desk-tab active" id="tabBtnPos" onclick="switchDeskTab('positions')">
+          ⚡ Active Positions <span class="badge sm ok" id="posCount" style="margin-left:6px;font-size:9.5px">(0 open)</span>
+        </button>
+        <button class="desk-tab" id="tabBtnHist" onclick="switchDeskTab('history')">
+          📜 Completed Trades History <span class="badge sm" id="histCount" style="margin-left:6px;font-size:9.5px">(0 closed)</span>
+        </button>
+        <button class="desk-tab" id="tabBtnAutopsy" onclick="switchDeskTab('autopsy')">
+          🧠 AI Autopsy Journal <span class="badge sm" id="reflectionsCount" style="margin-left:6px;font-size:9.5px;background:rgba(99,102,241,0.15);color:#818cf8">(0 autopsies recorded)</span>
+        </button>
+      </div>
+
+      <!-- Background Status Indicator -->
+      <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--ink-3);padding:6px 0">
+        <span class="led" style="width:6px;height:6px;background:var(--good);box-shadow:0 0 6px var(--good)"></span>
+        <span class="hide-mobile">Background AI Autopsy &amp; Trailing SL Engine: <b style="color:var(--good)">ACTIVE</b></span>
+      </div>
+    </div>
+
+    <!-- TAB 1: ACTIVE POSITIONS -->
+    <div id="tabContentPos" class="desk-tab-content active" style="padding:14px">
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:8px 12px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;font-size:11.5px;color:var(--ink-2);flex-wrap:wrap;gap:8px">
+        <span>🛡️ <b>Automated Trailing Stop-Loss Active:</b> Locks Breakeven at <b>+1.0R gain</b> (zero risk). At <b>+1.5R</b>, stop-loss dynamically trails mark price with a <b>1.0R buffer</b>.</span>
+        <span class="badge sm ok" style="font-weight:700">● 24/7 Monitored</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Trade ID</th>
+              <th>Opened</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th class="num">Size</th>
+              <th class="num">Entry Price</th>
+              <th class="num">Mark Price</th>
+              <th class="num">P&amp;L ($)</th>
+              <th class="num">P&amp;L (%)</th>
+              <th>Initial SL</th>
+              <th>Active Trailed SL</th>
+              <th>Target</th>
+              <th>Trailing Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody id="posBody">
+            <tr><td colspan="14" class="empty">No open Forex / Crypto positions. Click "Execute Trade" on any setup above to enter.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TAB 2: COMPLETED TRADES HISTORY -->
+    <div id="tabContentHist" class="desk-tab-content" style="display:none;padding:14px">
+      <div style="overflow-x:auto">
+        <table>
+          <thead>
+            <tr>
+              <th>Trade ID</th>
+              <th>Opened Time</th>
+              <th>Closed Time</th>
+              <th>Symbol</th>
+              <th>Side</th>
+              <th class="num">Size</th>
+              <th class="num">Entry Price</th>
+              <th class="num">Exit Price</th>
+              <th class="num">Realized P&amp;L ($)</th>
+              <th class="num">Return (%)</th>
+              <th>Initial SL</th>
+              <th>Exit Reason</th>
+              <th>Executor</th>
+            </tr>
+          </thead>
+          <tbody id="histBody">
+            <tr><td colspan="13" class="empty">Loading trade history…</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- TAB 3: AI POST-TRADE AUTOPSY JOURNAL (COMPACT / MINIMAL) -->
+    <div id="tabContentAutopsy" class="desk-tab-content" style="display:none;padding:14px">
+      <div style="background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+        <div style="font-size:12px;color:var(--ink-2)">
+          🧠 <b>Background Continuous Learning:</b> Every closed trade is audited by AI in the background. Actionable lessons are automatically saved into the risk matrix to prevent repeating mistakes.
+        </div>
+        <button class="btn sm" onclick="fetchReflections(true)" style="background:var(--cell);font-size:10.5px">🔄 Refresh Autopsies</button>
+      </div>
+      <div id="reflectionsContainer" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(340px,1fr));gap:12px">
+        <div class="empty" style="grid-column:1/-1">Loading trade autopsies &amp; continuous learning journal…</div>
+      </div>
+    </div>
+
   </div>
 
   <!-- 4-Agent Council Debate & Live News Modal -->
@@ -614,6 +682,31 @@ async function fetchCouncilStatus() {
     console.warn("Council status fetch failed:", err);
   }
 }
+
+async function switchDeskTab(tab) {
+  const tabs = ['positions', 'history', 'autopsy'];
+  tabs.forEach(t => {
+    const btn = document.getElementById(t === 'positions' ? 'tabBtnPos' : (t === 'history' ? 'tabBtnHist' : 'tabBtnAutopsy'));
+    const content = document.getElementById(t === 'positions' ? 'tabContentPos' : (t === 'history' ? 'tabContentHist' : 'tabContentAutopsy'));
+    if (t === tab) {
+      if (btn) btn.classList.add('active');
+      if (content) {
+        content.classList.add('active');
+        content.style.display = 'block';
+      }
+    } else {
+      if (btn) btn.classList.remove('active');
+      if (content) {
+        content.classList.remove('active');
+        content.style.display = 'none';
+      }
+    }
+  });
+  if (tab === 'autopsy' && typeof fetchReflections === 'function') {
+    fetchReflections();
+  }
+}
+window.switchDeskTab = switchDeskTab;
 
 async function toggleCouncil() {
   try {
@@ -1019,6 +1112,7 @@ function renderTradingViewWidget(containerId, sym, tf) {
   iframe.style.width = "100%";
   iframe.style.height = "100%";
   iframe.style.border = "none";
+  iframe.setAttribute("allow", "unload *; encrypted-media *");
   iframe.src = widgetUrl;
   container.appendChild(iframe);
 }
@@ -1044,6 +1138,17 @@ function openDedicatedChartPage() {
   window.open(`/chart?symbol=${encodeURIComponent(ACTIVE_CHART_SYMBOL)}`, "_blank");
 }
 
+const ASSET_ICONS = {
+  "BTCUSD": { icon: "₿", color: "#f59e0b", name: "Bitcoin" },
+  "ETHUSD": { icon: "Ξ", color: "#60a5fa", name: "Ethereum" },
+  "XAUTUSD": { icon: "🪙", color: "#fbbf24", name: "Tether Gold" },
+  "SOLUSD": { icon: "◎", color: "#a855f7", name: "Solana" },
+  "BNBUSD": { icon: "🟡", color: "#facc15", name: "BNB" },
+  "XRPUSD": { icon: "✕", color: "#38bdf8", name: "Ripple" },
+  "DOGEUSD": { icon: "🐕", color: "#fbbf24", name: "Dogecoin" },
+  "ADAUSD": { icon: "₳", color: "#3b82f6", name: "Cardano" },
+};
+
 function renderTickers() {
   const grid = document.getElementById("forexGrid");
   const keys = Object.keys(TICKERS);
@@ -1060,19 +1165,37 @@ function renderTickers() {
     card.onclick = () => selectChartSymbol(sym, true);
     card.title = `Click to load live interactive chart for ${sym}`;
 
+    const meta = ASSET_ICONS[sym] || { icon: "💎", color: "var(--accent)", name: sym };
     const decimals = t.mark_price > 500 ? 2 : (t.mark_price > 10 ? 3 : 4);
+    const rng = (t.high - t.low) || 1;
+    const rangePct = Math.min(100, Math.max(0, ((t.mark_price - t.low) / rng) * 100));
+
     card.innerHTML = `
       <div class="sym">
-        <span>${sym}</span>
-        <span class="chg ${isUp ? 'up' : 'down'}">${isUp ? '+' : ''}${fmt(t.change_24h, 2)}%</span>
+        <div style="display:flex;align-items:center;gap:7px">
+          <span style="width:24px;height:24px;border-radius:6px;background:rgba(255,255,255,0.06);border:1px solid var(--line);display:grid;place-items:center;font-size:12px;font-weight:800;color:${meta.color}">${meta.icon}</span>
+          <div>
+            <span style="font-weight:800;font-size:13px">${sym}</span>
+            <div style="font-size:9.5px;color:var(--ink-3);font-weight:500">${meta.name}</div>
+          </div>
+        </div>
+        <span class="chg ${isUp ? 'up' : 'down'}" style="font-size:11.5px;font-weight:700;padding:2px 6px;border-radius:5px;background:${isUp ? 'var(--good-soft)' : 'var(--bad-soft)'}">${isUp ? '+' : ''}${fmt(t.change_24h, 2)}%</span>
       </div>
-      <div class="px">$${fmt(t.mark_price, decimals)}</div>
-      <div class="sub" style="display:flex;justify-content:space-between">
-        <span>H: $${fmt(t.high, decimals)}</span>
-        <span>L: $${fmt(t.low, decimals)}</span>
+      <div class="px" style="font-size:19px;font-weight:800;margin:8px 0 6px">$${fmt(t.mark_price, decimals)}</div>
+      
+      <!-- 24h High/Low Slider Gauge Bar -->
+      <div style="margin:6px 0">
+        <div style="display:flex;justify-content:space-between;font-size:9.5px;color:var(--ink-3);font-family:ui-monospace,monospace;margin-bottom:3px">
+          <span>L: $${fmt(t.low, decimals)}</span>
+          <span>H: $${fmt(t.high, decimals)}</span>
+        </div>
+        <div style="height:5px;background:#080d1a;border-radius:3px;overflow:hidden;position:relative">
+          <div style="position:absolute;left:0;width:${rangePct.toFixed(1)}%;height:100%;background:${isUp ? 'var(--good)' : 'var(--bad)'};border-radius:3px"></div>
+        </div>
       </div>
-      <div class="chart-hint">
-        <span>📊 View Live Chart</span>
+
+      <div class="chart-hint" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--line)">
+        <span>📈 Open Live Chart</span>
         <span style="margin-left:auto">${isActive ? '● Active' : '↗'}</span>
       </div>
     `;
@@ -1226,7 +1349,7 @@ function renderKPIs() {
 }
 
 function renderChallenge(realizedPnl, openPnl) {
-  const startCap = 100.0;
+  const startCap = 90.0;
   const currentEquity = Math.max(0, startCap + realizedPnl + openPnl);
   const targetMilestone = 1000.0;
   const gainDollar = currentEquity - startCap;
@@ -1242,6 +1365,14 @@ function renderChallenge(realizedPnl, openPnl) {
   const bar = document.getElementById("challengeProgressBar");
   if (bar) bar.style.width = `${progress.toFixed(1)}%`;
 
+  const stageLabel = document.getElementById("compoundingStageLabel");
+  if (stageLabel) {
+    if (currentEquity >= 1000) stageLabel.textContent = "★ STAGE 3 COMPLETED: 10x Goal Achieved!";
+    else if (currentEquity >= 500) stageLabel.textContent = "🚀 STAGE 2: Accelerated Compounding ($500 - $1,000)";
+    else if (currentEquity >= 250) stageLabel.textContent = "📈 STAGE 1: Edge Proven ($250 - $500)";
+    else stageLabel.textContent = "🛡️ STAGE 0: Base Capital Validation ($90 - $250)";
+  }
+
   const dynRisk = Math.max(1.0, currentEquity * 0.025);
   const dailyLimit = Math.max(5.0, currentEquity * 0.06);
 
@@ -1254,11 +1385,33 @@ function renderChallenge(realizedPnl, openPnl) {
   const progEl = document.getElementById("statProgressPct");
   if (progEl) progEl.textContent = `${progress.toFixed(1)}%`;
 
+  // Daily drawdown circuit breaker bar update
+  const todayLoss = Math.min(0, gainDollar);
+  const ddPct = Math.min(100.0, (Math.abs(todayLoss) / dailyLimit) * 100.0);
+  const cbBar = document.getElementById("circuitBreakerBar");
+  const cbText = document.getElementById("circuitBreakerText");
+  if (cbBar && cbText) {
+    cbBar.style.width = `${ddPct.toFixed(1)}%`;
+    if (ddPct > 70) {
+      cbBar.style.background = "var(--bad)";
+      cbText.style.color = "var(--bad)";
+      cbText.textContent = `${ddPct.toFixed(1)}% Used (CRITICAL - $${fmt(dailyLimit - Math.abs(todayLoss), 2)} Left)`;
+    } else if (ddPct > 35) {
+      cbBar.style.background = "var(--warn)";
+      cbText.style.color = "var(--warn)";
+      cbText.textContent = `${ddPct.toFixed(1)}% Used (CAUTION - $${fmt(dailyLimit - Math.abs(todayLoss), 2)} Left)`;
+    } else {
+      cbBar.style.background = "var(--good)";
+      cbText.style.color = "var(--good)";
+      cbText.textContent = `${ddPct.toFixed(1)}% Used ($${fmt(dailyLimit - Math.abs(todayLoss), 2)} Safe Buffer)`;
+    }
+  }
+
   const badge = document.getElementById("challengeStatusBadge");
   if (badge) {
-    if (currentEquity <= 50.0) {
+    if (currentEquity <= (startCap * 0.5)) {
       badge.className = "badge veto";
-      badge.textContent = "⚠️ CAPITAL CRITICAL (<$50)";
+      badge.textContent = `⚠️ CAPITAL CRITICAL (<$${fmt(startCap * 0.5, 0)})`;
     } else if (gainDollar < -dailyLimit) {
       badge.className = "badge caution";
       badge.textContent = "🛑 DAILY DRAWDOWN DEFENSE";
@@ -1404,14 +1557,14 @@ function renderReflections() {
 }
 
 async function resetChallenge() {
-  if (!confirm("Are you sure you want to reset the Forex Paper Trading Desk to a clean $100 starting balance?\\n\\nThis will archive existing paper positions and restart the $100 -> $1,000 Challenge.")) return;
+  if (!confirm("Are you sure you want to reset the Forex Paper Trading Desk to a clean $90 starting balance?\\n\\nThis will archive existing paper positions and restart the $90 -> $1,000 Challenge.")) return;
   try {
     const res = await fetch("/api/forex/reset_challenge", {
       method: "POST",
       headers: { "Content-Type": "application/json" }
     });
     const data = await res.json();
-    alert(data.message || "Challenge reset to $100.00.");
+    alert(data.message || "Challenge reset to $90.00.");
     fetchPositionsAndHistory();
     fetchReflections();
   } catch (err) {
@@ -1513,6 +1666,7 @@ function renderSetups() {
 function closeCouncilModal() {
   document.getElementById("councilModal").style.display = "none";
 }
+window.closeCouncilModal = closeCouncilModal;
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') closeCouncilModal();
@@ -1606,6 +1760,26 @@ function renderCouncilDebateResults(data, setupIdx) {
         <div><span style="color:var(--ink-3)">ENTRY:</span> <b>$${fmt(v.recommended_entry, decimals)}</b></div>
         <div><span style="color:var(--bad)">STOP:</span> <b>$${fmt(v.recommended_stop_loss, decimals)}</b></div>
         <div><span style="color:var(--good)">TARGET:</span> <b>$${fmt(v.recommended_target, decimals)}</b></div>
+      </div>
+    </div>
+
+    <!-- Probabilistic Directional Forecast Bar -->
+    <div style="background:var(--card);border:1px solid var(--border);border-radius:10px;padding:12px 16px;margin:12px 0">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+        <span style="font-size:12px;font-weight:700;text-transform:uppercase;color:var(--ink)">
+          🎯 AI Directional Probability Forecast: <span style="color:${v.predicted_direction === 'UPWARD' ? 'var(--good)' : (v.predicted_direction === 'DOWNWARD' ? 'var(--bad)' : 'var(--warn)')};font-weight:800">${v.predicted_direction || 'CALCULATING'}</span>
+        </span>
+        <span style="font-size:11px;color:var(--ink-2);font-family:ui-monospace,monospace">
+          🟢 Up: <b>${v.probability_upward_pct || 0}%</b> &bull; 🔴 Down: <b>${v.probability_downward_pct || 0}%</b> &bull; ⚪ Chop/Trap: <b>${v.probability_sideways_pct || 0}%</b>
+        </span>
+      </div>
+      <div style="height:10px;border-radius:5px;background:var(--cell);overflow:hidden;display:flex">
+        <div style="width:${v.probability_upward_pct || 0}%;background:var(--good);transition:width 0.4s" title="Upward Breakout: ${v.probability_upward_pct || 0}%"></div>
+        <div style="width:${v.probability_downward_pct || 0}%;background:var(--bad);transition:width 0.4s" title="Downward Breakdown: ${v.probability_downward_pct || 0}%"></div>
+        <div style="width:${v.probability_sideways_pct || 0}%;background:#64748b;transition:width 0.4s" title="Sideways/Chop Trap: ${v.probability_sideways_pct || 0}%"></div>
+      </div>
+      <div style="font-size:11.5px;color:var(--ink-2);margin-top:8px;line-height:1.4">
+        <b>News Catalyst Impact:</b> ${v.news_impact_summary || 'No adverse headlines impacting directional probability.'}
       </div>
     </div>
 
@@ -1743,6 +1917,7 @@ async function closePosition(tradeId) {
     alert("Square-off failed: " + err.message);
   }
 }
+window.closePosition = closePosition;
 
 // Initial loads & polling
 const urlParams = new URLSearchParams(window.location.search);
@@ -2002,7 +2177,7 @@ def serve_post(path: str, body: dict) -> tuple[int, str, bytes] | None:
                 pass
         return (200, "application/json", json.dumps({
             "ok": True,
-            "message": "Challenge reset: paper desk initialized with clean $100.00 capital.",
+            "message": "Challenge reset: paper desk initialized with clean $90.00 capital.",
         }).encode("utf-8"))
 
     return None

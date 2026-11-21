@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 
+pytest.importorskip("langchain_openai")
+
 from tradingagents.llm_clients.openai_client import (
     OpenAIClient,
     _is_native_openai_base_url,
