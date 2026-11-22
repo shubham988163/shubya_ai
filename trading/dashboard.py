@@ -4722,7 +4722,8 @@ def main(argv: list[str] | None = None):
     # 8787 is what the README, scripts/autostart.vbs and start_trading.bat all
     # expect; the old 8080 default meant `python -m trading.dashboard` opened a
     # port the launcher never linked to.
-    ap.add_argument("port", nargs="?", type=int, default=8787)
+    default_port = int(os.environ.get("PORT", 8787))
+    ap.add_argument("port", nargs="?", type=int, default=default_port)
     ap.add_argument("--keep-days", type=int, default=RETENTION_DAYS,
                     help=f"trading sessions of history to keep (default {RETENTION_DAYS})")
     ap.add_argument("--no-prune", action="store_true",
