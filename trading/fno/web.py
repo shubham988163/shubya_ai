@@ -2654,12 +2654,13 @@ def _serve_forever(server, url: str) -> int:
     return 0
 
 
-def _bind(port: int, handler, what: str):
+def _bind(port: int, handler, what: str, host: str | None = None):
     """Bind, or explain who already has the port."""
     from http.server import ThreadingHTTPServer
 
+    bind_host = host or os.environ.get("HOST", "0.0.0.0")
     try:
-        return ThreadingHTTPServer(("127.0.0.1", port), handler)
+        return ThreadingHTTPServer((bind_host, port), handler)
     except OSError as exc:
         if getattr(exc, "errno", None) not in (48, 98):      # EADDRINUSE
             raise
