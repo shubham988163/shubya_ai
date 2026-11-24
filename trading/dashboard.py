@@ -409,6 +409,7 @@ def _handle_webhook(data: dict | None = None) -> dict:
     """Handle incoming GitHub push webhook: pull changes and restart."""
     import subprocess
     import threading
+    from trading.config import PROJECT_ROOT
 
     def _async_deploy():
         time.sleep(1.0)
