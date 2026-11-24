@@ -14,6 +14,7 @@ never disagree about an entry or a stop.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import threading
 from datetime import datetime
