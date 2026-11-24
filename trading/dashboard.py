@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 import sys
 import threading
@@ -402,6 +403,35 @@ def _handle_close(data: dict) -> dict:
 
     pnl = ledger.record_exit(trade_id, round(exit_price, 2), charges=round(charges, 2))
     return {"ok": True, "trade_id": trade_id, "exit_price": round(exit_price, 2), "pnl": round(pnl, 2)}
+
+
+def _handle_webhook(data: dict | None = None) -> dict:
+    """Handle incoming GitHub push webhook: pull changes and restart."""
+    import subprocess
+    import threading
+
+    def _async_deploy():
+        time.sleep(1.0)
+        try:
+            print("[WEBHOOK] Received GitHub push event. Pulling latest commits from 'paper' branch...", flush=True)
+            p = subprocess.run(["git", "pull", "origin", "paper"], cwd=str(PROJECT_ROOT), capture_output=True, text=True)
+            print(f"[WEBHOOK] git pull status={p.returncode}:\n{p.stdout}\n{p.stderr}", flush=True)
+            time.sleep(1.0)
+            print("[WEBHOOK] Restarting trading engine process with updated code...", flush=True)
+            if os.name == "posix":
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+            else:
+                subprocess.Popen([sys.executable] + sys.argv, cwd=str(PROJECT_ROOT))
+                os._exit(0)
+        except Exception as e:
+            print(f"[WEBHOOK] Deployment failed: {e}", flush=True)
+
+    threading.Thread(target=_async_deploy, daemon=True).start()
+    return {
+        "ok": True,
+        "message": "GitHub Webhook received. Pulling latest changes and restarting server.",
+        "branch": "paper"
+    }
 
 
 def _clean_context(ctx: dict | None) -> dict:
@@ -4591,6 +4621,17 @@ class Handler(BaseHTTPRequestHandler):
         if charts_res is not None:
             return self._send(*charts_res)
 
+        if path in ("/api/webhook", "/webhook", "/api/deploy"):
+            res = {
+                "ok": True,
+                "status": "ready",
+                "service": "GitHub Auto-Deployment Webhook",
+                "branch": "paper",
+                "endpoint": "/api/webhook",
+                "info": "Send a POST request from GitHub Webhook to trigger auto-deploy."
+            }
+            return self._send(200, "application/json", json.dumps(res).encode())
+
         if path == "/api/fyers/login":
             from trading.fno.fyers import get_auth_link
             auth_link = get_auth_link()
@@ -4691,6 +4732,9 @@ class Handler(BaseHTTPRequestHandler):
             elif url.path == "/api/close":
                 res = _handle_close(body)
                 self._send(200 if res.get("ok") else 400, "application/json", json.dumps(res, default=str).encode())
+            elif url.path in ("/api/webhook", "/webhook", "/api/deploy"):
+                res = _handle_webhook(body)
+                self._send(200, "application/json", json.dumps(res, default=str).encode())
             else:
                 self._send(404, "text/plain", b"not found")
         except Exception as exc:
