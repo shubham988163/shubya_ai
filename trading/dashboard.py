@@ -414,9 +414,10 @@ def _handle_webhook(data: dict | None = None) -> dict:
     def _async_deploy():
         time.sleep(1.0)
         try:
-            print("[WEBHOOK] Received GitHub push event. Pulling latest commits from 'paper' branch...", flush=True)
-            p = subprocess.run(["git", "pull", "origin", "paper"], cwd=str(PROJECT_ROOT), capture_output=True, text=True)
-            print(f"[WEBHOOK] git pull status={p.returncode}:\n{p.stdout}\n{p.stderr}", flush=True)
+            print("[WEBHOOK] Received GitHub push event. Syncing latest commits from 'paper' branch...", flush=True)
+            subprocess.run(["git", "fetch", "origin", "paper"], cwd=str(PROJECT_ROOT), capture_output=True, text=True)
+            p = subprocess.run(["git", "reset", "--hard", "origin/paper"], cwd=str(PROJECT_ROOT), capture_output=True, text=True)
+            print(f"[WEBHOOK] git reset status={p.returncode}:\n{p.stdout}\n{p.stderr}", flush=True)
             time.sleep(1.0)
             print("[WEBHOOK] Restarting trading engine process with updated code...", flush=True)
             port = str(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else "8787"
