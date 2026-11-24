@@ -419,10 +419,12 @@ def _handle_webhook(data: dict | None = None) -> dict:
             print(f"[WEBHOOK] git pull status={p.returncode}:\n{p.stdout}\n{p.stderr}", flush=True)
             time.sleep(1.0)
             print("[WEBHOOK] Restarting trading engine process with updated code...", flush=True)
+            port = str(sys.argv[1]) if len(sys.argv) > 1 and sys.argv[1].isdigit() else "8787"
             if os.name == "posix":
-                os.execv(sys.executable, [sys.executable] + sys.argv)
+                os.chdir(str(PROJECT_ROOT))
+                os.execv(sys.executable, [sys.executable, "-m", "trading.dashboard", port])
             else:
-                subprocess.Popen([sys.executable] + sys.argv, cwd=str(PROJECT_ROOT))
+                subprocess.Popen([sys.executable, "-m", "trading.dashboard", port], cwd=str(PROJECT_ROOT))
                 os._exit(0)
         except Exception as e:
             print(f"[WEBHOOK] Deployment failed: {e}", flush=True)
