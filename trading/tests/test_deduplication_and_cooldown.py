@@ -442,3 +442,49 @@ def test_options_engine_rejects_oversized_contracts_and_noise_stops(temp_ledger)
     assert router.execute(noise_sig) is None
 
 
+def test_index_option_blocks_synthetic_pricing(temp_ledger):
+    """Index option execution must skip synthetic Black-Scholes quotes when Fyers is disconnected."""
+    from trading.agents.agent_trader import _evaluate_and_execute_index_plan
+    from trading.fno.index_options import IndexPlan
+    from trading.fno.options import OptionPlan, OptionQuote
+    from trading.fno.models import Provenance
+
+    now_dt = datetime.now(IST)
+    synth_prov = Provenance("synthetic", "NSE:NIFTY26DEC25950CE", "black_scholes", now_dt, now_dt)
+    quote = OptionQuote(
+        underlying="NIFTY",
+        identifier="NSE:NIFTY26DEC25950CE",
+        option_type="Call",
+        strike=25950.0,
+        expiry="26-Dec-2026",
+        last_price=200.75,
+        pct_change=0.0,
+        open_interest=50000.0,
+        volume=20000.0,
+        underlying_value=25895.0,
+        prov=synth_prov,
+    )
+    opt_plan = OptionPlan(
+        quote=quote,
+        breakeven=26150.75,
+        breakeven_vs_t1=-0.5,
+        clears_t1=True,
+        clears_t2=True,
+        premium_at_stop=180.0,
+        premium_at_t1=268.0,
+    )
+    plan = IndexPlan(
+        spot=25895.0, or_high=25876.0, or_low=25800.0, atr=80.0,
+        ema_fast=25887.0, ema_slow=25831.0, day_high=25910.0, day_low=25790.0,
+        breakout=True, retested=True, holding=True, extended=False,
+        name="NIFTY 50", index_symbol="NIFTY", direction="CALL",
+        entry_low=25876.0, entry_high=25900.0, stop=25820.0, target1=25980.0, target2=26040.0,
+        option=opt_plan, tradeable=True, status="BREAKOUT -> RETEST -> HOLD",
+    )
+    router = ExecutionRouter(mode="paper", ledger=temp_ledger)
+    res = _evaluate_and_execute_index_plan(plan, router, temp_ledger, ignore_market_hours=True)
+    assert res is None
+    assert len(temp_ledger.trades_for_date()) == 0
+
+
+

@@ -1114,6 +1114,11 @@ def _evaluate_and_execute_index_plan(
         print(f"    SKIPPED: {q.identifier} is not a valid Fyers-tradable contract format")
         return None
 
+    prov = getattr(q, "prov", None)
+    if prov is not None and getattr(prov, "source", "") == "synthetic":
+        print(f"    SKIPPED: {q.identifier} uses synthetic Black-Scholes pricing (Fyers live option chain required)")
+        return None
+
     now_hm = datetime.now(IST).strftime("%H:%M")
     if not dry_run and not ignore_market_hours and not (MARKET_OPEN <= now_hm < SQUAREOFF_TIME):
         print(f"    SKIPPED: outside active market hours ({now_hm} IST; session is {MARKET_OPEN} - {SQUAREOFF_TIME})")
