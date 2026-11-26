@@ -59,6 +59,9 @@ LOGS_DIR = PROJECT_ROOT / "logs"
 FYERS_APP_ID = os.getenv("FYERS_APP_ID", "J8ZMHWBTBW-100")
 FYERS_SECRET_ID = os.getenv("FYERS_SECRET_ID", "KLFH4NCSIV")
 FYERS_REDIRECT_URI = os.getenv("FYERS_REDIRECT_URI", "http://localhost:3001/api/fyers/callback")
+FYERS_FY_ID = os.getenv("FYERS_FY_ID", "")
+FYERS_PIN = os.getenv("FYERS_PIN", "")
+FYERS_TOTP_KEY = os.getenv("FYERS_TOTP_KEY", "")
 
 # --- Strategy: EMA crossover ---
 FAST_EMA = 9

@@ -26,6 +26,7 @@ from zoneinfo import ZoneInfo
 
 from trading.config import (
     FYERS_APP_ID, FYERS_SECRET_ID, FYERS_REDIRECT_URI, FYERS_TOKEN_PATH,
+    FYERS_FY_ID, FYERS_PIN, FYERS_TOTP_KEY,
 )
 from trading.fno import config as C
 from trading.fno.data import LiveFeed
@@ -156,8 +157,13 @@ def exchange_token(auth_code: str, redirect_uri: str = FYERS_REDIRECT_URI) -> di
     return data
 
 
-def load_token() -> tuple[str | None, dict | None]:
-    """Load cached token if valid for today."""
+_AUTO_LOGIN_LOCK = threading.Lock()
+_AUTO_LOGIN_LAST_ATTEMPT = 0.0
+_AUTO_LOGIN_COOLDOWN = 60.0
+
+
+def _read_token_file() -> tuple[str | None, dict | None]:
+    """Read today's cached Fyers token from disk without triggering auto-login."""
     if not FYERS_TOKEN_PATH.exists():
         return None, None
     try:
@@ -168,6 +174,111 @@ def load_token() -> tuple[str | None, dict | None]:
             return token, data.get("profile") or {}
     except Exception:
         pass
+    return None, None
+
+
+def auto_login_totp(force: bool = False) -> dict | None:
+    """Headless Fyers API v3 login using Client ID, PIN, and TOTP secret key."""
+    global _AUTO_LOGIN_LAST_ATTEMPT
+    fy_id = os.getenv("FYERS_FY_ID", FYERS_FY_ID).strip()
+    pin = os.getenv("FYERS_PIN", FYERS_PIN).strip()
+    totp_key = os.getenv("FYERS_TOTP_KEY", FYERS_TOTP_KEY).strip()
+    if not (fy_id and pin and totp_key):
+        return None
+
+    with _AUTO_LOGIN_LOCK:
+        if not force:
+            existing, prof = _read_token_file()
+            if existing:
+                return {"access_token": existing, "profile": prof or {}}
+            if (time.monotonic() - _AUTO_LOGIN_LAST_ATTEMPT) < _AUTO_LOGIN_COOLDOWN:
+                return None
+
+        _AUTO_LOGIN_LAST_ATTEMPT = time.monotonic()
+        try:
+            import base64
+            import pyotp
+            import requests
+
+            session = requests.Session()
+            # 1. Send login OTP
+            r1 = session.post(
+                "https://api-t2.fyers.in/vagator/v2/send_login_otp_v2",
+                json={"fy_id": base64.b64encode(fy_id.encode()).decode(), "app_id": "2"},
+                timeout=TIMEOUT,
+            )
+            d1 = r1.json()
+            if d1.get("s") != "ok" or "request_key" not in d1:
+                raise FyersError(f"send_login_otp_v2 failed: {d1}")
+
+            # 2. Verify dynamic TOTP
+            otp = pyotp.TOTP(totp_key).now()
+            r2 = session.post(
+                "https://api-t2.fyers.in/vagator/v2/verify_otp",
+                json={"request_key": d1["request_key"], "otp": otp},
+                timeout=TIMEOUT,
+            )
+            d2 = r2.json()
+            if d2.get("s") != "ok" or "request_key" not in d2:
+                raise FyersError(f"verify_otp failed: {d2}")
+
+            # 3. Verify 4-digit PIN
+            r3 = session.post(
+                "https://api-t2.fyers.in/vagator/v2/verify_pin_v2",
+                json={
+                    "request_key": d2["request_key"],
+                    "identity_type": "pin",
+                    "identifier": base64.b64encode(str(pin).encode()).decode(),
+                },
+                timeout=TIMEOUT,
+            )
+            d3 = r3.json()
+            bearer = (d3.get("data") or {}).get("access_token")
+            if d3.get("s") != "ok" or not bearer:
+                raise FyersError(f"verify_pin_v2 failed: {d3}")
+
+            # 4. Generate OAuth authorization code
+            app_prefix, app_type = (FYERS_APP_ID.split("-", 1) if "-" in FYERS_APP_ID else (FYERS_APP_ID, "100"))
+            r4 = session.post(
+                "https://api-t1.fyers.in/api/v3/token",
+                headers={"Authorization": f"Bearer {bearer}"},
+                json={
+                    "fyers_id": fy_id,
+                    "app_id": app_prefix,
+                    "redirect_uri": FYERS_REDIRECT_URI,
+                    "appType": app_type,
+                    "code_challenge": "",
+                    "state": "auto_totp",
+                    "scope": "",
+                    "nonce": "",
+                    "response_type": "code",
+                    "create_cookie": True,
+                },
+                timeout=TIMEOUT,
+            )
+            d4 = r4.json()
+            redirect_url = d4.get("Url", "")
+            auth_code = urllib.parse.parse_qs(urllib.parse.urlparse(redirect_url).query).get("auth_code", [None])[0]
+            if not auth_code:
+                raise FyersError(f"token auth_code failed: {d4}")
+
+            # 5. Exchange auth_code for daily access_token & persist
+            data = exchange_token(auth_code)
+            _AUTO_LOGIN_LAST_ATTEMPT = 0.0
+            print(f"[Fyers] Auto-login via TOTP succeeded for {fy_id} ({datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S IST')}).", flush=True)
+            return data
+        except Exception as exc:
+            print(f"[Fyers] Auto-login via TOTP failed: {exc}", flush=True)
+            return None
+
+
+def load_token(auto_refresh: bool = True) -> tuple[str | None, dict | None]:
+    """Load cached token if valid for today, auto-logging in via TOTP when expired."""
+    token, prof = _read_token_file()
+    if token:
+        return token, prof
+    if auto_refresh and auto_login_totp():
+        return _read_token_file()
     return None, None
 
 _LIVE_STREAM_LTP: dict[str, tuple[float, float]] = {}
@@ -204,6 +315,7 @@ class FyersStreamManager:
         self._connected_event = threading.Event()
         self._subscribed: set[str] = set()
         self._thread: threading.Thread | None = None
+        self._active_token: str | None = None
 
     @classmethod
     def get_instance(cls) -> FyersStreamManager:
@@ -216,8 +328,18 @@ class FyersStreamManager:
         token, _ = load_token()
         if not token:
             return
+        # Reconnect if daily auto-login issued a newer token while the daemon stayed up
+        if self._active_token and self._active_token != token and self._ws is not None:
+            try:
+                self._ws.close_connection()
+            except Exception:
+                pass
+            self._connected = False
+            self._connected_event.clear()
+            self._thread = None
         if self._connected or (self._thread and self._thread.is_alive()):
             return
+        self._active_token = token
 
         def _run():
             try:

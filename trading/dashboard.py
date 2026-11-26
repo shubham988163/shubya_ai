@@ -774,6 +774,16 @@ def _background_indian_autotrader():
             now = datetime.now(IST)
             if now.weekday() < 5:  # Mon-Fri
                 now_hm = now.strftime("%H:%M")
+                if "08:30" <= now_hm <= "15:30":
+                    token, _ = fyers.load_token(auto_refresh=True)
+                    if token:
+                        try:
+                            from trading.fno.fyers import FyersStreamManager
+                            stream = FyersStreamManager.get_instance()
+                            if getattr(stream, "_active_token", None) != token or not stream._connected:
+                                stream.start()
+                        except Exception:
+                            pass
                 if "09:15" <= now_hm <= "15:30":
                     from trading.agents.agent_trader import scan_and_trade
                     scan_and_trade(
@@ -4637,7 +4647,13 @@ class Handler(BaseHTTPRequestHandler):
             return self._send(200, "application/json", json.dumps(res).encode())
 
         if path == "/api/fyers/login":
-            from trading.fno.fyers import get_auth_link
+            from trading.fno.fyers import auto_login_totp, get_auth_link
+            if auto_login_totp(force=True):
+                self.send_response(302)
+                self.send_header("Location", "/")
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                return
             auth_link = get_auth_link()
             html = f"""<!doctype html>
 <html>
