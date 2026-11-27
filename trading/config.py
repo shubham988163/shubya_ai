@@ -118,6 +118,7 @@ LOSS_COOLDOWN_MINUTES = 20           # Strict cooldown after a losing trade on t
 MAX_LOSSES_PER_SYMBOL_DAY = 2        # Lockout underlying after 2 losing trades in the same session
 MAX_DAILY_TRADES = 10                # Maximum total quality trades allowed per day (plenty of room for good setups)
 AGENT_TRADE_INDEX_OPTIONS = True    # Automatically evaluate and execute NIFTY, BANK NIFTY & SENSEX index options
+AGENT_TRADE_SENSEX = False          # Disabled: SENSEX wide spreads caused stop-outs; focus on NIFTY / BANK NIFTY
 ONLY_INDEX_OPTIONS = True           # Option A: Restrict option trading strictly to indices (NIFTY, BANKNIFTY, SENSEX)
 
 # --- AI agent ---

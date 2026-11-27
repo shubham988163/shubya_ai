@@ -728,10 +728,10 @@ class FyersFeed(LiveFeed):
         except ValueError:
             return 5
 
-    def _fetch(self, symbol: str, instrument: str) -> Candles | None:
+    def _fetch(self, symbol: str, instrument: str, days: int | None = None) -> Candles | None:
         fetched = datetime.now(IST)
         try:
-            raw = self.client.history(symbol, C.BAR_INTERVAL.rstrip("m"), self._days())
+            raw = self.client.history(symbol, C.BAR_INTERVAL.rstrip("m"), days if days is not None else self._days())
         except FyersError as exc:
             self.errors.append(f"{instrument}: Fyers history failed ({exc})")
             return None
@@ -783,7 +783,7 @@ class FyersFeed(LiveFeed):
         mapped = INDEX_SYMBOLS.get(ticker)
         if mapped is None:
             return super().index_candles(ticker)
-        got = self._fetch(mapped, ticker)
+        got = self._fetch(mapped, ticker, days=max(self._days(), 30))
         return got if got is not None else (
             super().index_candles(ticker) if self.fallback else None)
 

@@ -101,6 +101,8 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
     closes = bars["Close"].astype(float)
     ema_f = float(ind.ema(closes, C.EMA_FAST).iloc[-1]) if len(closes) >= C.EMA_FAST else None
     ema_s = float(ind.ema(closes, C.EMA_SLOW).iloc[-1]) if len(closes) >= C.EMA_SLOW else None
+    sma200_30m = ind.sma_htf(bars, "30min", 200)
+    or_bias = ind.opening_range_bias(today)
     spot = float(today["Close"].iloc[-1])
     post = ind.after_opening_range(today)
 
@@ -153,6 +155,10 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
             plan.rejections.append(f"market context is {market.classification} — put fights the tape")
         if ema_f and ema_s and ema_f > ema_s:
             plan.rejections.append("the 20 EMA is above the 50 EMA — trend does not support a short")
+        if not pullback and or_bias == 1:
+            plan.rejections.append("15m OR candle closed green — Pine OR bias blocks a short")
+        if sma200_30m is not None and spot > sma200_30m:
+            plan.rejections.append(f"spot {spot:.1f} is above 30m 200 SMA ({sma200_30m:.1f}) — Pine filter blocks short")
 
         stop_base = (float(touched["High"].max()) if retested
                      else float(after["High"].iloc[0]) if len(after) else or_high)
@@ -236,6 +242,10 @@ def analyse(df: pd.DataFrame, now: datetime, market: MarketContext,
     if ema_f and ema_s and ema_f < ema_s:
         plan.rejections.append("the 20 EMA is below the 50 EMA — the trend does "
                                "not support a long")
+    if not pullback and or_bias == -1:
+        plan.rejections.append("15m OR candle closed red — Pine OR bias blocks a long")
+    if sma200_30m is not None and spot < sma200_30m:
+        plan.rejections.append(f"spot {spot:.1f} is below 30m 200 SMA ({sma200_30m:.1f}) — Pine filter blocks long")
 
     # Levels, on the same rules the stock setups use.
     stop_base = (float(touched["Low"].min()) if retested

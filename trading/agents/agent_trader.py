@@ -1377,7 +1377,8 @@ def scan_and_trade(
                         executed_count += 1
 
             # 3. SENSEX (BSE)
-            if executed_count < max_trades and getattr(res, "sensex_plan", None):
+            from trading.config import AGENT_TRADE_SENSEX
+            if AGENT_TRADE_SENSEX and executed_count < max_trades and getattr(res, "sensex_plan", None):
                 sx_res = _evaluate_and_execute_index_plan(
                     res.sensex_plan, router, ledger, dry_run=dry_run
                 )

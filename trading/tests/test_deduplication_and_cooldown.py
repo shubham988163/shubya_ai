@@ -203,10 +203,11 @@ def test_max_daily_trades_limit(temp_ledger, monkeypatch):
 
 def test_index_options_execution_and_guards(temp_ledger, monkeypatch):
     """Index option execution helper must evaluate, size, route, and enforce safety guards."""
+    from datetime import datetime
     from trading.agents.agent_trader import _evaluate_and_execute_index_plan
     from trading.fno.index_options import IndexPlan
     from trading.fno.options import OptionPlan, OptionQuote
-    from trading.fno.models import Provenance
+    from trading.fno.models import IST, Provenance
 
     router = ExecutionRouter(mode="paper", ledger=temp_ledger)
     from datetime import datetime
@@ -444,10 +445,11 @@ def test_options_engine_rejects_oversized_contracts_and_noise_stops(temp_ledger)
 
 def test_index_option_blocks_synthetic_pricing(temp_ledger):
     """Index option execution must skip synthetic Black-Scholes quotes when Fyers is disconnected."""
+    from datetime import datetime
     from trading.agents.agent_trader import _evaluate_and_execute_index_plan
     from trading.fno.index_options import IndexPlan
     from trading.fno.options import OptionPlan, OptionQuote
-    from trading.fno.models import Provenance
+    from trading.fno.models import IST, Provenance
 
     now_dt = datetime.now(IST)
     synth_prov = Provenance("synthetic", "NSE:NIFTY26DEC25950CE", "black_scholes", now_dt, now_dt)
@@ -479,12 +481,40 @@ def test_index_option_blocks_synthetic_pricing(temp_ledger):
         breakout=True, retested=True, holding=True, extended=False,
         name="NIFTY 50", index_symbol="NIFTY", direction="CALL",
         entry_low=25876.0, entry_high=25900.0, stop=25820.0, target1=25980.0, target2=26040.0,
-        option=opt_plan, tradeable=True, status="BREAKOUT -> RETEST -> HOLD",
+        option=opt_plan,
     )
+    assert plan.tradeable is True
     router = ExecutionRouter(mode="paper", ledger=temp_ledger)
     res = _evaluate_and_execute_index_plan(plan, router, temp_ledger, ignore_market_hours=True)
     assert res is None
     assert len(temp_ledger.trades_for_date()) == 0
+
+
+def test_plan_put_prefers_atm_over_deep_otm_penny_strike():
+    """Strike selector must pick liquid ATM strikes over cheap deep-OTM penny contracts."""
+    from datetime import datetime
+    from trading.fno import options as opt_mod
+    from trading.fno.models import IST, Provenance
+
+    now_dt = datetime(2026, 11, 27, 12, 15, tzinfo=IST)
+    prov = Provenance("fyers", "NIFTY", "option_chain", now_dt, now_dt)
+    atm = opt_mod.OptionQuote(
+        underlying="NIFTY", identifier="NSE:NIFTY26DEC25700PE", option_type="Put",
+        strike=25700.0, expiry="01-Dec-2026", last_price=163.0, pct_change=10.0,
+        open_interest=166760.0, volume=200000000.0, underlying_value=25717.5, prov=prov,
+    )
+    deep_otm = opt_mod.OptionQuote(
+        underlying="NIFTY", identifier="NSE:NIFTY26DEC24900PE", option_type="Put",
+        strike=24900.0, expiry="01-Dec-2026", last_price=5.65, pct_change=-20.0,
+        open_interest=58335.0, volume=28000000.0, underlying_value=25717.5, prov=prov,
+    )
+    plan = opt_mod.plan_put(
+        "NIFTY", [deep_otm, atm], spot=25717.5, target1=25600.0, target2=25520.0,
+        stop=25790.0, now=now_dt, today=now_dt.date(),
+    )
+    assert plan.tradeable
+    assert plan.quote is atm
+
 
 
 

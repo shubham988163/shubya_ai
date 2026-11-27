@@ -108,6 +108,33 @@ def opening_range(day_df: pd.DataFrame) -> tuple[float, float, int]:
     return float(win["High"].max()), float(win["Low"].min()), len(win)
 
 
+def opening_range_bias(day_df: pd.DataFrame) -> int:
+    """First-15m OR candle direction: 1 (green), -1 (red), or 0 (flat/missing)."""
+    start, end = _hhmm(C.MARKET_OPEN), _hhmm(C.OPENING_RANGE_END)
+    t = day_df.index.time
+    win = day_df[(t >= start) & (t < end)]
+    if win.empty:
+        return 0
+    or_open = float(win["Open"].iloc[0])
+    or_close = float(win["Close"].iloc[-1])
+    if or_close > or_open:
+        return 1
+    if or_close < or_open:
+        return -1
+    return 0
+
+
+def sma_htf(df: pd.DataFrame, rule: str = "30min", period: int = 200) -> float | None:
+    """Resampled higher-timeframe SMA (e.g. 30m 200 SMA matching TradingView Pine)."""
+    if df.empty:
+        return None
+    res = df["Close"].astype(float).resample(rule, offset="15min").last().dropna()
+    if len(res) < period:
+        return None
+    val = res.rolling(period).mean().iloc[-1]
+    return float(val) if pd.notna(val) else None
+
+
 def after_opening_range(day_df: pd.DataFrame) -> pd.DataFrame:
     end = _hhmm(C.OPENING_RANGE_END)
     return day_df[day_df.index.time >= end]

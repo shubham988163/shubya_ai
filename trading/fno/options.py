@@ -148,6 +148,18 @@ def _front_expiry(calls: list[OptionQuote]) -> list[OptionQuote]:
     return [q for q in calls if parse_expiry(q.expiry) == first]
 
 
+def _strike_score(q: OptionQuote, spot: float, proj: dict | None) -> float:
+    """Rank viable option strikes: favor ATM / near-money over far-OTM penny contracts."""
+    dist_pct = abs(q.strike - spot) / max(spot, 1.0)
+    if not proj or proj.get("rr") is None:
+        return abs(q.strike - spot)
+    eff_rr = min(float(proj["rr"]), 2.5)
+    # Far-OTM penny index strikes (< ₹30) look inflated in Black-Scholes R:R
+    # but trip ExecutionRouter's 30% cost-floor check on brokerage + STT.
+    penny_penalty = 5.0 if (spot >= 5000 and q.last_price < 30.0) else 0.0
+    return dist_pct * 100.0 - eff_rr * 0.5 + penny_penalty
+
+
 def plan_call(symbol: str, board: list[OptionQuote], *, spot: float,
               target1: float, target2: float, stop: float | None = None,
               now: datetime | None = None,
@@ -220,9 +232,8 @@ def plan_call(symbol: str, board: list[OptionQuote], *, spot: float,
                 f"{proj['at_t1'] - q.last_price:.2f} on the move — {rr:.2f}:1, worse "
                 "than one-to-one")
             continue
-        # Among strikes that pay, prefer the best reward-to-risk, then the one
-        # nearest the money.
-        viable.append((-(rr or 0) + abs(q.strike - spot) / max(spot, 1) * 10, q, proj))
+        # Among strikes that pay, prefer near-the-money / liquid strikes over deep-OTM penny options.
+        viable.append((_strike_score(q, spot, proj), q, proj))
 
     if not viable:
         later = [q for q in every if q not in listed]
@@ -334,7 +345,7 @@ def plan_put(symbol: str, board: list[OptionQuote], *, spot: float,
                 "than one-to-one")
             continue
 
-        viable.append((-(rr or 0) + abs(q.strike - spot) / max(spot, 1) * 10, q, proj))
+        viable.append((_strike_score(q, spot, proj), q, proj))
 
     if not viable:
         later = [q for q in every if q not in listed]
