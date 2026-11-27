@@ -52,7 +52,7 @@ class ForexAutoTrader:
             "use_council": True,
             "min_conviction": 8,
             "max_open_positions": 2,
-            "starting_capital_usd": 90.0,
+            "starting_capital_usd": 100.0,
             "target_milestone_usd": 1000.0,
             "risk_pct_per_trade": 2.5,
             "max_daily_loss_pct": 6.0,

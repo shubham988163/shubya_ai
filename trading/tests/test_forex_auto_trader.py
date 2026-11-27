@@ -279,3 +279,81 @@ def test_forex_auto_trader_sideways_and_order_flow_filters(mock_delta_client):
     assert res["executed_trades"][0]["symbol"] == "BTCUSD"
 
 
+def test_forex_pine_orb_20_50_ema_and_30m_sma200_gates(monkeypatch):
+    """ForexEngine must enforce Pine OR Bias, 20/50 EMA, and 30m 200 SMA alignment."""
+    import pandas as pd
+    import numpy as np
+    from trading import forex_engine as fe
+
+    fe._FOREX_30M_CACHE.clear()
+    fe._FOREX_DAILY_CACHE.clear()
+    monkeypatch.setattr(fe, "fetch_forex_daily_mas", lambda sym: {})
+
+    # Construct 90 15m bars starting at 08:00 UTC with a clean bullish trend + Green 13:00 UTC OR candle
+    idx = pd.date_range("2026-11-27 00:00", periods=90, freq="15min", tz="UTC")
+    base = np.linspace(69000.0, 70000.0, 90)
+    opens = base - 10.0
+    closes = base + 15.0
+    highs = closes + 20.0
+    lows = opens - 20.0
+    vols = np.full(90, 100.0)
+
+    # Identify the 13:00 UTC bar as the session OR bar; keep steady uptrend right below OR high so ADX stays > 20
+    or_idx = [i for i, t in enumerate(idx) if t.hour == 13 and t.minute == 0][-1]
+    opens[or_idx] = 69800.0
+    closes[or_idx] = 69900.0  # Green OR candle
+    highs[or_idx] = 69920.0
+    lows[or_idx] = 69780.0
+    post_count = 89 - (or_idx + 1)
+    if post_count > 0:
+        ramp = np.linspace(69500.0, 69900.0, post_count)
+        for k, j in enumerate(range(or_idx + 1, 89)):
+            opens[j] = ramp[k] - 30.0
+            closes[j] = ramp[k] + 15.0
+            highs[j] = ramp[k] + 20.0
+            lows[j] = ramp[k] - 40.0
+    # Final breakout bar with strong buyer close and RVOL
+    opens[-1] = 69930.0
+    closes[-1] = 70250.0
+    highs[-1] = 70260.0
+    lows[-1] = 69920.0
+    vols[-1] = 350.0
+
+    df15 = pd.DataFrame({"Open": opens, "High": highs, "Low": lows, "Close": closes, "Volume": vols}, index=idx)
+
+    # 30m DataFrame where 200 SMA is BELOW price (allows Long)
+    df30_ok = pd.DataFrame({
+        "Open": np.full(220, 68000.0),
+        "High": np.full(220, 68100.0),
+        "Low": np.full(220, 67900.0),
+        "Close": np.full(220, 68000.0),
+        "Volume": np.full(220, 100.0),
+    })
+
+    client = MagicMock()
+    client.get_candles.side_effect = lambda sym, resolution="15", bars=120: df30_ok if resolution == "30" else df15
+    engine = ForexEngine(client=client)
+    setup = engine.evaluate_symbol("BTCUSD")
+    assert setup is not None
+    assert setup["strategy"] == "pine_orb_multi_ma"
+    assert setup["side"] == "BUY"
+    assert setup["sma_200_30m"] == 68000.0
+    assert setup["target1"] > setup["price"]
+
+    # Now make 30m 200 SMA ABOVE spot price (72000 > 70250) -> Pine HTF filter must veto Long
+    fe._FOREX_30M_CACHE.clear()
+    df30_high = df30_ok.copy()
+    df30_high["Close"] = 72000.0
+    client.get_candles.side_effect = lambda sym, resolution="15", bars=120: df30_high if resolution == "30" else df15
+    assert engine.evaluate_symbol("BTCUSD") is None
+
+    # Now restore 30m 200 SMA below price, but flip the 13:00 UTC OR candle RED -> Pine OR bias must veto Long
+    fe._FOREX_30M_CACHE.clear()
+    df15_red_or = df15.copy()
+    df15_red_or.iloc[or_idx, df15_red_or.columns.get_loc("Open")] = 69910.0
+    df15_red_or.iloc[or_idx, df15_red_or.columns.get_loc("Close")] = 69790.0
+    client.get_candles.side_effect = lambda sym, resolution="15", bars=120: df30_ok if resolution == "30" else df15_red_or
+    assert engine.evaluate_symbol("BTCUSD") is None
+
+
+

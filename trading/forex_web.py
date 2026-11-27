@@ -159,7 +159,7 @@ __TOPBAR__
     <div style="margin-top:16px;background:var(--cell);border:1px solid var(--line);border-radius:10px;padding:12px 16px">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
         <span style="font-size:12px;font-weight:700;color:var(--ink);letter-spacing:0.04em;text-transform:uppercase;display:flex;align-items:center;gap:6px">
-          🚀 10x Exponential Roadmap: <span id="challengeEquityText" style="color:var(--good);font-family:ui-monospace,monospace;font-weight:800">$90.00 (+0.0%)</span>
+          🚀 10x Exponential Roadmap: <span id="challengeEquityText" style="color:var(--good);font-family:ui-monospace,monospace;font-weight:800">$100.00 (+0.0%)</span>
         </span>
         <span style="font-size:11px;color:var(--ink-2);font-family:ui-monospace,monospace" id="compoundingStageLabel">
           STAGE 0: Base Capital Validation
@@ -173,7 +173,7 @@ __TOPBAR__
 
       <!-- Milestone Diamond Checkpoints -->
       <div style="display:flex;justify-content:space-between;font-size:10.5px;color:var(--ink-3);margin-top:7px;font-family:ui-monospace,monospace">
-        <span style="color:var(--good);font-weight:700">◆ $90 (1x Base)</span>
+        <span style="color:var(--good);font-weight:700">◆ $100 (1x Base)</span>
         <span>◆ $250 (Stage 1)</span>
         <span>◆ $500 (Stage 2)</span>
         <span style="color:#a855f7;font-weight:700">★ $1,000 (10x Goal)</span>
@@ -326,14 +326,14 @@ __TOPBAR__
 
       <!-- 6 Metrics Cards Grid -->
       <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px" id="hudCardsGrid">
-        <!-- 9/21 EMA -->
+        <!-- Pine 20/50 EMA -->
         <div style="background:var(--cell);border:1px solid var(--line);border-radius:8px;padding:9px 12px">
           <div style="display:flex;justify-content:space-between;align-items:center;font-size:10.5px;color:var(--ink-3);font-weight:700;text-transform:uppercase">
-            <span>📈 9/21 EMA Trend</span>
+            <span>📈 Pine 20/50 EMA Trend</span>
             <span id="hudEmaPill" class="badge sm" style="font-size:9px">--</span>
           </div>
           <div style="font-size:12.5px;font-weight:700;font-family:ui-monospace,monospace;color:var(--ink);margin-top:4px" id="hudEmaValues">$-- / $--</div>
-          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudEmaNote">Fast 9 vs Slow 21 EMA</div>
+          <div style="font-size:10px;color:var(--ink-3);margin-top:2px" id="hudEmaNote">Fast 20 vs Slow 50 EMA</div>
         </div>
 
         <!-- VWAP -->
@@ -455,7 +455,7 @@ __TOPBAR__
     <div style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
       <div>
         <h2 style="font-size:14px;letter-spacing:.04em;color:var(--ink);margin:0;display:flex;align-items:center;gap:8px">
-          <span>🎯 Multi-Strategy Qualifying Signals (ORB + AVWAP + 9/21 EMA + 200 SMA)</span>
+          <span>🎯 Multi-Strategy Qualifying Signals (Pine ORB + 20/50 EMA + 30m 200 SMA)</span>
         </h2>
         <div style="font-size:11.5px;color:var(--ink-3);margin-top:3px">
           Continuous 24/7 institutional scanning across Bitcoin, Ethereum, Gold (XAUT), and Major Perpetuals.
@@ -863,15 +863,17 @@ async function fetchActiveSymbolParameters(sym) {
       updateEl.textContent = `Live: ${d.updated_at || new Date().toLocaleTimeString()}`;
     }
 
-    // 1. EMA
-    const isEmaBull = d.ema_9 > d.ema_21;
+    // 1. EMA (Pine 20/50)
+    const fastEma = d.ema_20 ?? d.ema_9;
+    const slowEma = d.ema_50 ?? d.ema_21;
+    const isEmaBull = fastEma > slowEma;
     const emaPill = document.getElementById("hudEmaPill");
     if (emaPill) {
       emaPill.className = `badge sm ${isEmaBull ? 'bull' : 'bear'}`;
       emaPill.textContent = isEmaBull ? "🟢 Bullish" : "🔴 Bearish";
     }
     const emaVal = document.getElementById("hudEmaValues");
-    if (emaVal) emaVal.textContent = `$${fmt(d.ema_9, dec)} / $${fmt(d.ema_21, dec)}`;
+    if (emaVal) emaVal.textContent = `$${fmt(fastEma, dec)} / $${fmt(slowEma, dec)}`;
     const emaNote = document.getElementById("hudEmaNote");
     if (emaNote) emaNote.textContent = d.ema_trend;
 
@@ -1349,7 +1351,7 @@ function renderKPIs() {
 }
 
 function renderChallenge(realizedPnl, openPnl) {
-  const startCap = 90.0;
+  const startCap = 100.0;
   const currentEquity = Math.max(0, startCap + realizedPnl + openPnl);
   const targetMilestone = 1000.0;
   const gainDollar = currentEquity - startCap;
@@ -1557,14 +1559,14 @@ function renderReflections() {
 }
 
 async function resetChallenge() {
-  if (!confirm("Are you sure you want to reset the Forex Paper Trading Desk to a clean $90 starting balance?\\n\\nThis will archive existing paper positions and restart the $90 -> $1,000 Challenge.")) return;
+  if (!confirm("Are you sure you want to reset the Forex Paper Trading Desk to a clean $100 starting balance?\\n\\nThis will archive existing paper positions and restart the $100 -> $1,000 Challenge.")) return;
   try {
     const res = await fetch("/api/forex/reset_challenge", {
       method: "POST",
       headers: { "Content-Type": "application/json" }
     });
     const data = await res.json();
-    alert(data.message || "Challenge reset to $90.00.");
+    alert(data.message || "Challenge reset to $100.00.");
     fetchPositionsAndHistory();
     fetchReflections();
   } catch (err) {
@@ -1593,7 +1595,7 @@ function renderSetups() {
   const container = document.getElementById("signalsGrid");
   document.getElementById("setupCountBadge").textContent = `${SETUPS.length} Setups Qualified`;
   if (!SETUPS.length) {
-    container.innerHTML = '<div class="empty" style="grid-column:1/-1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:24px">No qualifying setups at this moment. Strategy requirements: 9/21 EMA crossover + VWAP hold + ORB breakout with RVOL > 1.2.</div>';
+    container.innerHTML = '<div class="empty" style="grid-column:1/-1;background:var(--card);border:1px solid var(--line);border-radius:10px;padding:24px">No qualifying setups at this moment. Pine ORB requirements: 15m Session OR Breakout + Green/Red OR Bias + 20/50 EMA + 30m 200 SMA alignment.</div>';
     return;
   }
 
@@ -1620,9 +1622,9 @@ function renderSetups() {
       </div>
 
       <div class="strategy-badges">
-        <span class="strategy-pill">ORB Breakout</span>
-        <span class="strategy-pill">AVWAP Scalp</span>
-        <span class="strategy-pill">9/21 EMA Trend</span>
+        <span class="strategy-pill">Pine ORB + Bias</span>
+        <span class="strategy-pill">30m 200 SMA</span>
+        <span class="strategy-pill">20/50 EMA Trend</span>
         <span class="strategy-pill">Conviction: ${s.conviction}/10</span>
       </div>
 
@@ -2177,7 +2179,7 @@ def serve_post(path: str, body: dict) -> tuple[int, str, bytes] | None:
                 pass
         return (200, "application/json", json.dumps({
             "ok": True,
-            "message": "Challenge reset: paper desk initialized with clean $90.00 capital.",
+            "message": "Challenge reset: paper desk initialized with clean $100.00 capital.",
         }).encode("utf-8"))
 
     return None

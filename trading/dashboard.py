@@ -1502,7 +1502,7 @@ __TOPBAR__
       <div>
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <span style="font-size:11.5px;font-weight:700;color:var(--ink);letter-spacing:.03em">
-            🎯 24/7 Multi-Strategy Qualifying Signals (ORB + AVWAP + 9/21 EMA + 200 SMA)
+            🎯 24/7 Multi-Strategy Qualifying Signals (Pine ORB + 20/50 EMA + 30m 200 SMA)
           </span>
           <span class="badge sm" id="mainForexSetupCount" style="font-size:10px;background:var(--cell);color:var(--ink-2)">Checking setups…</span>
         </div>

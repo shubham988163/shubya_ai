@@ -1,7 +1,7 @@
 """Forex & Crypto 4-Agent AI Council Desk (Gemini 3.8 Flash).
 
 The 4 AI Agents:
-1. Technical Analyst: Audits 9/21 EMA, 200 SMA, Session VWAP, ORB Breakout, ATR, and RVOL.
+1. Technical Analyst: Audits Pine 20/50 EMA, 30m 200 SMA, Session VWAP, 15m ORB Breakout + OR Bias, ATR, and RVOL.
 2. Bullish Researcher: Formulates the upside momentum thesis, positive catalysts, and continuation potential.
 3. Bearish Researcher: Devil's advocate stress-testing for false breakouts, liquidity traps, overhead resistance, and macro risks.
 4. Trader Decision Agent: Chief Risk Officer synthesizing the debate into an APPROVE / CAUTION / VETO verdict and conviction score (1-10).
@@ -120,7 +120,7 @@ class ForexCouncilVerdict(BaseModel):
         description="Summary of live news headlines and how macro catalysts influence directional probability",
     )
     technical_analysis: str = Field(
-        description="Technical Analyst View: Evaluation of 9/21 EMA crossover, 200 SMA regime, VWAP slope, ORB breakout, ATR, and RVOL"
+        description="Technical Analyst View: Evaluation of Pine 20/50 EMA trend, 30m 200 SMA filter, VWAP slope, 15m ORB breakout + OR bias, ATR, and RVOL"
     )
     bull_case: str = Field(
         description="Bullish Researcher Thesis: Upside continuation catalysts, accumulation signs, and momentum confirmation"
@@ -142,8 +142,8 @@ You enforce extreme selectivity targeting an institutional 70%+ win-rate edge by
 Your panel consists of 4 distinct specialist personas who debate and reach a binding consensus:
 
 1. Technical Analyst:
-   - Scrutinizes multi-timeframe chart structure: 9/21 EMA trend alignment, 200 SMA macro filter, Session VWAP pullback, and 1-hour Opening Range Breakout (ORB).
-   - STRICT MULTI-TIMEFRAME RULE: 5m/15m breakout MUST align with 1H & Daily trend. Never approve a Long if 1H < 200 SMA; never approve a Short if 1H > 200 SMA.
+   - Scrutinizes multi-timeframe chart structure: Pine 20/50 EMA trend alignment, 30m 200 SMA macro filter, Session VWAP pullback, and 15m Session Opening Range Breakout (ORB) with Opening Candle Bias.
+   - STRICT MULTI-TIMEFRAME RULE: 15m breakout MUST align with 30m 200 SMA & Daily trend. Never approve a Long below 30m 200 SMA or on a Red 15m OR candle; never approve a Short above 30m 200 SMA or on a Green 15m OR candle.
    - STRICT INSTITUTIONAL VOLUME: Demands Relative Volume (RVOL >= 2.0x). Breakouts on volume < 2.0x are rejected as unconfirmed retail traps.
    - DAILY 365 MA WALL: Vetoes any trade within 0.5% proximity of the Daily 365 MA wall.
 

@@ -1,14 +1,15 @@
 """Forex & Crypto Strategy Engine for Delta Exchange.
 
-Applies the Default ORB + Multi-Timeframe MA Strategy to 24/7 Forex and Crypto markets:
-1. 15m / 1h Session Opening Range Breakout (ORB) with Opening Candle Bias (Green=Long only, Red=Short only)
-2. Daily Big Trend Filter: Daily 50 SMA and Daily 200 SMA agreement
-3. Daily 365 SMA "Wall" Filter: Skips if price is within 0.5% below 365 SMA (Long) or above 365 SMA (Short)
-4. Intraday Trend: 9/21 Exponential Moving Average (EMA) and 200 SMA on 1H / 30m
-5. Anchored Session VWAP alignment (price > VWAP for Long, price < VWAP for Short)
-6. Volume Confirmation (RVOL >= 1.5x of 20-period baseline)
-7. 1:1.5 Risk-to-Reward Targets with Opposite Range or 1.5 ATR Structural Stop
-8. AI Multi-Agent Conviction Scoring (Threshold >= 8/10)
+Applies the Pine Script ORB + Multi-Timeframe MA Strategy to 24/7 Forex and Crypto markets:
+1. 15m Session Opening Range Breakout (ORB) with Opening Candle Bias (Green=Long only, Red=Short only)
+2. Higher-Timeframe Trend Filter: 30m 200 SMA (res="30", 200 bars)
+3. Daily Big Trend Filter: Daily 50 SMA and Daily 200 SMA agreement
+4. Daily 365 SMA "Wall" Filter: Skips if price is within 0.5% below 365 SMA (Long) or above 365 SMA (Short)
+5. Intraday Trend: Pine 20/50 Exponential Moving Average (EMA)
+6. Anchored Session VWAP alignment (price > VWAP for Long, price < VWAP for Short)
+7. Volume Confirmation (RVOL >= 1.2x/1.5x of 20-period baseline) + ADX Chop & Order Flow gates
+8. 1:2.0 Risk-to-Reward Targets with Opposite OR / 1.5 ATR Structural Stop
+9. AI Multi-Agent Conviction Scoring (Threshold >= 8/10)
 """
 from __future__ import annotations
 
@@ -24,7 +25,9 @@ from trading.delta_exchange import DeltaClient, FOREX_WATCHLIST
 logger = logging.getLogger("trading.forex_engine")
 
 _FOREX_DAILY_CACHE: dict[str, tuple[float, dict[str, float]]] = {}
+_FOREX_30M_CACHE: dict[str, tuple[float, float | None]] = {}
 _CACHE_TTL = 300.0  # 5 minutes
+_SESSION_HOURS_UTC = (0, 8, 13)  # 00:00 UTC Daily, 08:00 UTC London, 13:00 UTC New York
 
 _YF_FOREX_MAP = {
     "BTCUSD": "BTC-USD",
@@ -74,8 +77,62 @@ def near_wall(price: float, ma: float | None, side: str, wall_pct: float = 0.5) 
     return 0 < gap <= wall_pct
 
 
+def fetch_forex_30m_sma200(client: DeltaClient, symbol: str) -> float | None:
+    """Fetch 30m historical candles from Delta Exchange and compute 30m 200 SMA (Pine HTF filter)."""
+    now_ts = time.time()
+    if symbol in _FOREX_30M_CACHE:
+        cached_ts, cached_val = _FOREX_30M_CACHE[symbol]
+        if now_ts - cached_ts < _CACHE_TTL:
+            return cached_val
+
+    sma200_30m: float | None = None
+    try:
+        df30 = client.get_candles(symbol, resolution="30", bars=220)
+        if df30 is not None and len(df30) >= 200:
+            val = float(df30["Close"].astype(float).rolling(200).mean().iloc[-1])
+            if val == val and val > 0:
+                sma200_30m = val
+    except Exception as exc:
+        logger.debug(f"Could not fetch 30m 200 SMA for {symbol}: {exc}")
+
+    _FOREX_30M_CACHE[symbol] = (now_ts, sma200_30m)
+    return sma200_30m
+
+
+def extract_session_orb(
+    df: pd.DataFrame,
+    session_hours_utc: tuple[int, ...] = _SESSION_HOURS_UTC,
+) -> tuple[float, float, int]:
+    """Extract the most recent major session 15m Opening Range (High, Low, OR Bias).
+
+    Looks for the latest completed 15m bar at 00:00 (Daily), 08:00 (London), or 13:00 (NY) UTC.
+    Falls back cleanly to the local 14-bar window if timestamps lack session markers.
+    """
+    hist = df.iloc[:-1] if len(df) > 2 else df
+    if isinstance(hist.index, pd.DatetimeIndex):
+        mask = hist.index.hour.isin(session_hours_utc) & (hist.index.minute == 0)
+        session_bars = hist[mask]
+        if not session_bars.empty:
+            or_bar = session_bars.iloc[-1]
+            or_h = float(or_bar["High"])
+            or_l = float(or_bar["Low"])
+            or_c = float(or_bar["Close"])
+            or_o = float(or_bar["Open"])
+            bias = 1 if or_c > or_o else (-1 if or_c < or_o else 0)
+            return or_h, or_l, bias
+
+    recent_bars = df.iloc[-15:-1] if len(df) >= 16 else hist
+    range_high = float(recent_bars["High"].max())
+    range_low = float(recent_bars["Low"].min())
+    first_bar = recent_bars.iloc[0]
+    or_bias = 1 if float(first_bar["Close"]) > float(first_bar["Open"]) else (
+        -1 if float(first_bar["Close"]) < float(first_bar["Open"]) else 0
+    )
+    return range_high, range_low, or_bias
+
+
 def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
-    """Calculate EMAs, 200 SMA, VWAP, ATR, RSI, and Volume RVOL on OHLCV candles."""
+    """Calculate Pine 20/50 EMAs (plus 9/21), 200 SMA, VWAP, ATR, RSI, and Volume RVOL."""
     if df is None or len(df) < 25:
         return df
 
@@ -84,9 +141,11 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
     l = df["Low"]
     v = df["Volume"].replace(0, 1.0)
 
-    # 1. EMAs and 200 SMA
+    # 1. EMAs (Pine 20/50 + legacy 9/21) and 200 SMA
     df["EMA_9"] = c.ewm(span=9, adjust=False).mean()
     df["EMA_21"] = c.ewm(span=21, adjust=False).mean()
+    df["EMA_20"] = c.ewm(span=20, adjust=False).mean()
+    df["EMA_50"] = c.ewm(span=50, adjust=False).mean()
     df["SMA_200"] = c.rolling(window=min(len(df), 200), min_periods=20).mean()
 
     # 2. VWAP
@@ -149,48 +208,82 @@ def calculate_indicators(df: pd.DataFrame) -> pd.DataFrame:
 
 
 class ForexEngine:
-    """Analyzes Forex/Crypto assets using the Default ORB + Multi-MA + 365 Wall Strategy."""
+    """Analyzes Forex/Crypto assets using Pine Script ORB + 20/50 EMA + 30m 200 SMA + 365 Wall."""
 
     def __init__(self, client: DeltaClient | None = None):
         self.client = client or DeltaClient()
 
-    def evaluate_symbol(self, symbol: str) -> dict[str, Any] | None:
-        """Run the strategy on a Forex/Crypto symbol and produce an actionable trade setup."""
-        df = self.client.get_candles(symbol, resolution="5", bars=90)
+    def _load_symbol_context(self, symbol: str) -> dict[str, Any] | None:
+        """Fetch 15m candles, 30m 200 SMA, Daily MAs, and Session 15m ORB context."""
+        df = self.client.get_candles(symbol, resolution="15", bars=120)
         if df is None or len(df) < 25:
             return None
 
         df = calculate_indicators(df)
         last = df.iloc[-1]
-        prev = df.iloc[-2]
-
         price = float(last["Close"])
         ema9 = float(last["EMA_9"])
         ema21 = float(last["EMA_21"])
-        sma200 = float(last["SMA_200"])
+        ema20 = float(last["EMA_20"])
+        ema50 = float(last["EMA_50"])
+        sma200_local = float(last["SMA_200"])
+        sma200_30m = fetch_forex_30m_sma200(self.client, symbol)
+        htf_sma200 = sma200_30m if sma200_30m is not None else sma200_local
         vwap = float(last["VWAP"])
         atr = float(last["ATR"])
         rsi = float(last["RSI"])
         rvol = float(last["RVOL"])
 
-        # 1. Higher Timeframe Daily MAs & The 365 Wall
         daily_mas = fetch_forex_daily_mas(symbol)
         d50 = daily_mas.get("d50")
         d200 = daily_mas.get("d200")
         d365 = daily_mas.get("d365")
 
-        # 2. Session Range & Opening Candle Bias (15 bars = 1 hour 15 min session range)
-        recent_bars = df.iloc[-15:-1]
-        range_high = float(recent_bars["High"].max())
-        range_low = float(recent_bars["Low"].min())
-        first_bar = recent_bars.iloc[0]
-        or_bias = 1 if float(first_bar["Close"]) > float(first_bar["Open"]) else (
-            -1 if float(first_bar["Close"]) < float(first_bar["Open"]) else 0
-        )
+        range_high, range_low, or_bias = extract_session_orb(df)
+        range_width_pct = ((range_high - range_low) / range_low) * 100.0 if range_low > 0 else 0.0
 
-        # 3. Trend Alignment & VWAP Gate
-        trend_up = ema9 > ema21 and price > vwap and price >= sma200 * 0.99
-        trend_down = ema9 < ema21 and price < vwap and price <= sma200 * 1.01
+        return {
+            "df": df,
+            "last": last,
+            "price": price,
+            "ema9": ema9,
+            "ema21": ema21,
+            "ema20": ema20,
+            "ema50": ema50,
+            "sma200_local": sma200_local,
+            "sma200_30m": sma200_30m,
+            "htf_sma200": htf_sma200,
+            "vwap": vwap,
+            "atr": atr,
+            "rsi": rsi,
+            "rvol": rvol,
+            "d50": d50,
+            "d200": d200,
+            "d365": d365,
+            "range_high": range_high,
+            "range_low": range_low,
+            "range_width_pct": range_width_pct,
+            "or_bias": or_bias,
+        }
+
+    def evaluate_symbol(self, symbol: str) -> dict[str, Any] | None:
+        """Run the Pine ORB + Multi-MA strategy on a Forex/Crypto symbol."""
+        ctx = self._load_symbol_context(symbol)
+        if ctx is None:
+            return None
+
+        last = ctx["last"]
+        price = ctx["price"]
+        ema20, ema50 = ctx["ema20"], ctx["ema50"]
+        htf_sma200 = ctx["htf_sma200"]
+        sma200_30m = ctx["sma200_30m"]
+        vwap, atr, rsi, rvol = ctx["vwap"], ctx["atr"], ctx["rsi"], ctx["rvol"]
+        d50, d200, d365 = ctx["d50"], ctx["d200"], ctx["d365"]
+        range_high, range_low, or_bias = ctx["range_high"], ctx["range_low"], ctx["or_bias"]
+
+        # 3. Pine Multi-MA Trend Alignment (20/50 EMA + 30m 200 SMA + Session VWAP)
+        trend_up = ema20 > ema50 and price > vwap and price > htf_sma200
+        trend_down = ema20 < ema50 and price < vwap and price < htf_sma200
 
         # Daily Big Trend agreement
         if d50 is not None:
@@ -204,9 +297,9 @@ class ForexEngine:
             if price > d200:
                 trend_down = False
 
-        # 4. Breakout Triggers
-        is_breakout_long = price >= range_high and trend_up and (or_bias != -1)
-        is_breakout_short = price <= range_low and trend_down and (or_bias != 1)
+        # 4. Strict Pine ORB Breakout + Opening Candle Bias Gate
+        is_breakout_long = price > range_high and trend_up and (or_bias == 1)
+        is_breakout_short = price < range_low and trend_down and (or_bias == -1)
 
         adx = float(last.get("ADX", 20.0))
         bb_width = float(last.get("BB_Width", 1.5))
@@ -220,8 +313,6 @@ class ForexEngine:
             is_breakout_short = False
 
         # 4c. Order Flow Imbalance & Buyer/Seller Dominance Gate
-        # For Longs, require Buyer Ratio >= 55.0% (aggressive buyer presence)
-        # For Shorts, require Buyer Ratio <= 45.0% (aggressive seller presence)
         if is_breakout_long and buyer_ratio < 55.0:
             logger.info(f"[{symbol}] Long Breakout VETOED: Buyer volume ratio {buyer_ratio:.1f}% < 55% threshold (lack of buyer pressure).")
             is_breakout_long = False
@@ -249,10 +340,10 @@ class ForexEngine:
 
         if trend_up:
             score += 15
-            reasons.append("Bullish 9/21 EMA crossover above VWAP")
+            reasons.append("Bullish Pine 20/50 EMA alignment above VWAP & 30m 200 SMA")
         elif trend_down:
             score += 15
-            reasons.append("Bearish 9/21 EMA crossover below VWAP")
+            reasons.append("Bearish Pine 20/50 EMA alignment below VWAP & 30m 200 SMA")
 
         if d50 and d200:
             if price > d50 and price > d200:
@@ -264,10 +355,10 @@ class ForexEngine:
 
         if is_breakout_long:
             score += 20
-            reasons.append(f"ORB Breakout above session High (${range_high:,.{decimals}f}) with Green Bias")
+            reasons.append(f"Pine ORB Breakout above Session High (${range_high:,.{decimals}f}) with Green OR Bias")
         elif is_breakout_short:
             score += 20
-            reasons.append(f"ORB Breakdown below session Low (${range_low:,.{decimals}f}) with Red Bias")
+            reasons.append(f"Pine ORB Breakdown below Session Low (${range_low:,.{decimals}f}) with Red OR Bias")
 
         if rvol >= 2.0:
             score += 20
@@ -286,38 +377,36 @@ class ForexEngine:
             score += 10
             reasons.append(f"RSI in bearish momentum zone ({rsi:.1f})")
 
-        # 7. Action, Stop Loss & 1:1.5 RR Targets
-        # Gold (XAUTUSD) requires a wider 2.5x ATR structural buffer to absorb wick volatility on Delta
+        # 7. Action, Stop Loss & Pine 1:2 RR Targets (requires actual ORB breakout)
         atr_mult = 2.5 if symbol == "XAUTUSD" else 1.5
-        if is_breakout_long or (trend_up and or_bias == 1):
+        if is_breakout_long:
             side = "BUY"
             if symbol == "XAUTUSD":
                 raw_sl = price - atr_mult * atr
             else:
-                raw_sl = min(range_low, price - atr_mult * atr)
-                raw_sl = max(raw_sl, price - max(0.5 * atr, price * 0.003))
+                raw_sl = max(range_low, price - atr_mult * atr)
+                raw_sl = min(raw_sl, price - max(0.5 * atr, price * 0.003))
             stop_loss = round(raw_sl, decimals)
             risk = max(price * 0.003, price - stop_loss)
-            target1 = round(price + 1.5 * risk, decimals)  # Default 1:1.5 RR
-            target2 = round(price + 2.0 * risk, decimals)
-        elif is_breakout_short or (trend_down and or_bias == -1):
+            target1 = round(price + 2.0 * risk, decimals)
+            target2 = round(price + 3.0 * risk, decimals)
+        elif is_breakout_short:
             side = "SELL"
             if symbol == "XAUTUSD":
                 raw_sl = price + atr_mult * atr
             else:
-                raw_sl = max(range_high, price + atr_mult * atr)
-                raw_sl = min(raw_sl, price + max(0.5 * atr, price * 0.003))
+                raw_sl = min(range_high, price + atr_mult * atr)
+                raw_sl = max(raw_sl, price + max(0.5 * atr, price * 0.003))
             stop_loss = round(raw_sl, decimals)
             risk = max(price * 0.003, stop_loss - price)
-            target1 = round(price - 1.5 * risk, decimals)  # Default 1:1.5 RR
-            target2 = round(price - 2.0 * risk, decimals)
+            target1 = round(price - 2.0 * risk, decimals)
+            target2 = round(price - 3.0 * risk, decimals)
         else:
             return None
 
         conviction = min(10, max(4, int(score / 10)))
         grade = "A+" if score >= 85 else "A" if score >= 75 else "B" if score >= 65 else "WATCH"
 
-        # Position sizing: target ~$25 - $50 risk per trade
         risk_per_unit = abs(price - stop_loss)
         unit_size = max(1.0, round(50.0 / max(0.1, risk_per_unit), 2)) if price > 100 else max(10.0, round(50.0 / max(0.01, risk_per_unit), 0))
 
@@ -333,8 +422,9 @@ class ForexEngine:
             "score": score,
             "conviction": conviction,
             "grade": grade,
-            "strategy": "orb_multi_ma",
+            "strategy": "pine_orb_multi_ma",
             "or_bias": "GREEN (BUY)" if or_bias == 1 else ("RED (SELL)" if or_bias == -1 else "DOJI"),
+            "sma_200_30m": round(sma200_30m, decimals) if sma200_30m is not None else None,
             "daily_wall_365": d365,
             "reasons": reasons,
             "rvol": round(rvol, 2),
@@ -361,36 +451,20 @@ class ForexEngine:
         return sorted(results, key=lambda x: x["score"], reverse=True)
 
     def get_symbol_parameters(self, symbol: str) -> dict[str, Any]:
-        """Compute real-time strategy parameters for the Technical Candlestick Station HUD."""
-        df = self.client.get_candles(symbol, resolution="5", bars=90)
-        if df is None or len(df) < 25:
+        """Compute real-time Pine ORB + Multi-MA parameters for the Chart Station HUD."""
+        ctx = self._load_symbol_context(symbol)
+        if ctx is None:
             return {"ok": False, "error": f"Insufficient candle data for {symbol}"}
 
-        df = calculate_indicators(df)
-        last = df.iloc[-1]
-        price = float(last["Close"])
-        ema9 = float(last["EMA_9"])
-        ema21 = float(last["EMA_21"])
-        sma200 = float(last["SMA_200"])
-        vwap = float(last["VWAP"])
-        atr = float(last["ATR"])
-        rsi = float(last["RSI"])
-        rvol = float(last["RVOL"])
+        price = ctx["price"]
+        ema9, ema21 = ctx["ema9"], ctx["ema21"]
+        ema20, ema50 = ctx["ema20"], ctx["ema50"]
+        htf_sma200, sma200_30m = ctx["htf_sma200"], ctx["sma200_30m"]
+        vwap, atr, rsi, rvol = ctx["vwap"], ctx["atr"], ctx["rsi"], ctx["rvol"]
+        d50, d200, d365 = ctx["d50"], ctx["d200"], ctx["d365"]
+        range_high, range_low = ctx["range_high"], ctx["range_low"]
+        range_width_pct, or_bias = ctx["range_width_pct"], ctx["or_bias"]
 
-        daily_mas = fetch_forex_daily_mas(symbol)
-        d50 = daily_mas.get("d50")
-        d200 = daily_mas.get("d200")
-        d365 = daily_mas.get("d365")
-
-        recent_bars = df.iloc[-15:-1]
-        range_high = float(recent_bars["High"].max())
-        range_low = float(recent_bars["Low"].min())
-        range_width_pct = ((range_high - range_low) / range_low) * 100.0 if range_low > 0 else 0.0
-
-        first_bar = recent_bars.iloc[0]
-        or_bias = 1 if float(first_bar["Close"]) > float(first_bar["Open"]) else (
-            -1 if float(first_bar["Close"]) < float(first_bar["Open"]) else 0
-        )
         bias_str = "BULLISH (GREEN)" if or_bias == 1 else ("BEARISH (RED)" if or_bias == -1 else "NEUTRAL")
 
         wall_safe = True
@@ -403,16 +477,16 @@ class ForexEngine:
                 wall_safe = False
                 wall_note = f"VETO: Approaching 365 MA Support Wall (${d365:,.2f})"
 
-        ema_diff = ema9 - ema21
-        ema_trend = "BULLISH (9 > 21)" if ema_diff > 0 else "BEARISH (9 < 21)"
+        ema_trend = "BULLISH (20 > 50)" if ema20 >= ema50 else "BEARISH (20 < 50)"
         vwap_status = "ABOVE VWAP (+)" if price >= vwap else "BELOW VWAP (-)"
-        sma_status = "ABOVE 200 SMA" if price >= sma200 else "BELOW 200 SMA"
+        sma_label = "30m 200 SMA" if sma200_30m is not None else "200 SMA"
+        sma_status = f"ABOVE {sma_label}" if price >= htf_sma200 else f"BELOW {sma_label}"
         rvol_status = "VOLUME EXPANSION (>= 1.5x)" if rvol >= 1.5 else (
             "MODERATE VOLUME (>= 1.2x)" if rvol >= 1.2 else f"NORMAL ({rvol:.2f}x)"
         )
 
-        is_breakout_long = price >= range_high and ema9 > ema21 and or_bias == 1 and wall_safe
-        is_breakout_short = price <= range_low and ema9 < ema21 and or_bias == -1 and wall_safe
+        is_breakout_long = price > range_high and ema20 > ema50 and price > htf_sma200 and or_bias == 1 and wall_safe
+        is_breakout_short = price < range_low and ema20 < ema50 and price < htf_sma200 and or_bias == -1 and wall_safe
         in_range = range_low <= price <= range_high
 
         decimals = 2 if price > 500 else (3 if price > 10 else 4)
@@ -421,34 +495,34 @@ class ForexEngine:
         if is_breakout_long:
             action = "BUY BREAKOUT"
             action_badge = "bull"
-            sl = round(price - atr_mult * atr if symbol == "XAUTUSD" else range_low, decimals)
+            sl = round(price - atr_mult * atr if symbol == "XAUTUSD" else max(range_low, price - atr_mult * atr), decimals)
             risk = max(price * 0.003, price - sl)
-            target1 = round(price + 1.5 * risk, decimals)
-            target2 = round(price + 2.0 * risk, decimals)
+            target1 = round(price + 2.0 * risk, decimals)
+            target2 = round(price + 3.0 * risk, decimals)
         elif is_breakout_short:
             action = "SELL BREAKDOWN"
             action_badge = "bear"
-            sl = round(price + atr_mult * atr if symbol == "XAUTUSD" else range_high, decimals)
+            sl = round(price + atr_mult * atr if symbol == "XAUTUSD" else min(range_high, price + atr_mult * atr), decimals)
             risk = max(price * 0.003, sl - price)
-            target1 = round(price - 1.5 * risk, decimals)
-            target2 = round(price - 2.0 * risk, decimals)
+            target1 = round(price - 2.0 * risk, decimals)
+            target2 = round(price - 3.0 * risk, decimals)
         else:
             action = "HOLD / IN-RANGE CONSOLIDATION"
             action_badge = "ok"
-            base_sl = price - atr_mult * atr if ema9 > ema21 else price + atr_mult * atr
-            sl = round(base_sl if symbol == "XAUTUSD" else (range_low if ema9 > ema21 else range_high), decimals)
+            base_sl = price - atr_mult * atr if ema20 > ema50 else price + atr_mult * atr
+            sl = round(base_sl if symbol == "XAUTUSD" else (range_low if ema20 > ema50 else range_high), decimals)
             risk = max(price * 0.003, abs(price - sl))
-            target1 = round(price + 1.5 * risk if ema9 > ema21 else price - 1.5 * risk, decimals)
-            target2 = round(price + 2.0 * risk if ema9 > ema21 else price - 2.0 * risk, decimals)
+            target1 = round(price + 2.0 * risk if ema20 > ema50 else price - 2.0 * risk, decimals)
+            target2 = round(price + 3.0 * risk if ema20 > ema50 else price - 3.0 * risk, decimals)
 
         score = 50
         reasons = []
-        if ema9 > ema21:
+        if ema20 > ema50:
             score += 15
-            reasons.append("Bullish 9/21 EMA momentum")
+            reasons.append("Bullish Pine 20/50 EMA momentum")
         else:
             score += 15
-            reasons.append("Bearish 9/21 EMA momentum")
+            reasons.append("Bearish Pine 20/50 EMA momentum")
 
         if d50 and d200:
             if price > d50 and price > d200:
@@ -460,10 +534,10 @@ class ForexEngine:
 
         if is_breakout_long:
             score += 20
-            reasons.append(f"Breakout above High (${range_high:,.{decimals}f}) with Green Bias")
+            reasons.append(f"Pine ORB Breakout above High (${range_high:,.{decimals}f}) with Green Bias")
         elif is_breakout_short:
             score += 20
-            reasons.append(f"Breakdown below Low (${range_low:,.{decimals}f}) with Red Bias")
+            reasons.append(f"Pine ORB Breakdown below Low (${range_low:,.{decimals}f}) with Red Bias")
         else:
             reasons.append(f"Inside Session Range (${range_low:,.{decimals}f} - ${range_high:,.{decimals}f})")
 
@@ -486,14 +560,17 @@ class ForexEngine:
         return {
             "ok": True,
             "symbol": symbol,
-            "strategy": "orb_multi_ma",
+            "strategy": "pine_orb_multi_ma",
             "mark_price": round(price, decimals),
             "ema_9": round(ema9, decimals),
             "ema_21": round(ema21, decimals),
+            "ema_20": round(ema20, decimals),
+            "ema_50": round(ema50, decimals),
             "ema_trend": ema_trend,
             "vwap": round(vwap, decimals),
             "vwap_status": vwap_status,
-            "sma_200": round(sma200, decimals),
+            "sma_200": round(htf_sma200, decimals),
+            "sma_200_30m": round(sma200_30m, decimals) if sma200_30m is not None else None,
             "sma_status": sma_status,
             "daily_50": d50,
             "daily_200": d200,
