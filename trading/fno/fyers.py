@@ -44,9 +44,11 @@ INDEX_SYMBOLS = {
 }
 
 _QUOTES_CACHE: dict[str, tuple[float, list[dict]]] = {}
-_QUOTES_CACHE_TTL = 3.0  # seconds (ultra-fast for trailing stops, protects 5000/day limit)
+_QUOTES_CACHE_TTL = 5.0  # seconds (fast for trailing stops, protects 5000/day limit)
 _HISTORY_CACHE: dict[tuple, tuple[float, list[dict]]] = {}
 _HISTORY_CACHE_TTL = 45.0  # seconds (preserves 5000/day daily Fyers quota)
+_OPTION_CHAIN_CACHE: dict[tuple[str, int], tuple[float, dict]] = {}
+_OPTION_CHAIN_CACHE_TTL = 25.0  # seconds (preserves 5000/day daily Fyers quota)
 
 
 def _quotes_from_yfinance(symbols: list[str]) -> list[dict]:
@@ -674,12 +676,18 @@ class FyersClient:
         return []
 
     def option_chain(self, symbol: str, strikecount: int = 10) -> dict | None:
-        """Fetch real-time option chain for an index or stock from Fyers."""
+        """Fetch real-time option chain for an index or stock from Fyers (cached)."""
+        now = time.time()
+        cache_key = (symbol, strikecount)
+        cached = _OPTION_CHAIN_CACHE.get(cache_key)
+        if cached and (now - cached[0]) < _OPTION_CHAIN_CACHE_TTL:
+            return cached[1]
         model = self._get_direct_model()
         if model:
             try:
                 res = model.optionchain(data={"symbol": symbol, "strikecount": strikecount})
                 if isinstance(res, dict) and res.get("s") == "ok" and "data" in res:
+                    _OPTION_CHAIN_CACHE[cache_key] = (now, res["data"])
                     return res["data"]
             except Exception:
                 pass

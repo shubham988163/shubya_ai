@@ -516,5 +516,30 @@ def test_plan_put_prefers_atm_over_deep_otm_penny_strike():
     assert plan.quote is atm
 
 
+def test_weekly_symbol_normalization_and_fill_mismatch_guard(temp_ledger):
+    """Weekly expiries must map to Fyers weekly format and mismatched fills must be rejected."""
+    from trading.agents.agent_trader import normalize_option_contract_symbol
+
+    assert normalize_option_contract_symbol("OPTIDXNIFTY01-12-2026PE25750.00") == "NSE:NIFTY26D0125750PE"
+    assert normalize_option_contract_symbol("OPTIDXNIFTY29-12-2026PE25750.00") == "NSE:NIFTY26DEC25750PE"
+
+    router = ExecutionRouter(mode="paper", ledger=temp_ledger, get_ltp=lambda _s: 400.05)
+    sig = {
+        "symbol": "NSE:NIFTY26DEC25750PE",
+        "underlying": "NIFTY",
+        "side": "BUY",
+        "qty": 65,
+        "price": 191.0,
+        "stop_loss": 184.0,
+        "target": 262.40,
+        "is_option": True,
+        "strategy_id": "index_orb_option",
+        "ts": time.time(),
+    }
+    assert router.execute(sig) is None
+    assert "fill_price_mismatch" in (router.last_rejection or "")
+    assert len(temp_ledger.trades_for_date()) == 0
+
+
 
 

@@ -1065,16 +1065,34 @@ def normalize_option_contract_symbol(identifier: str) -> str:
         return s
     m = re.match(r"^OPT(?:IDX|STK)([A-Z&_-]+?)(\d{2})-(\d{2})-(\d{4})(CE|PE)(\d+(?:\.\d+)?)$", s)
     if m:
+        from datetime import date, timedelta
         und, day, mon, yr, opt_type, strike_raw = m.groups()
         strike = str(int(float(strike_raw)))
         yr_short = yr[2:]
+        exch = "BSE" if "SENSEX" in und or "BANKEX" in und else "NSE"
         month_names = {
             "01": "JAN", "02": "FEB", "03": "MAR", "04": "APR",
             "05": "MAY", "06": "JUN", "07": "JUL", "08": "AUG",
             "09": "SEP", "10": "OCT", "11": "NOV", "12": "DEC",
         }
-        mon_str = month_names.get(mon, mon)
-        return f"NSE:{und}{yr_short}{mon_str}{strike}{opt_type}"
+        weekly_codes = {
+            "01": "1", "02": "2", "03": "3", "04": "4",
+            "05": "5", "06": "6", "07": "7", "08": "8",
+            "09": "9", "10": "O", "11": "N", "12": "D",
+        }
+        is_monthly = True
+        try:
+            d_obj = date(int(yr), int(mon), int(day))
+            # If another weekly expiry falls 7 days later in the same month, this is a weekly contract
+            if (d_obj + timedelta(days=7)).month == d_obj.month:
+                is_monthly = False
+        except ValueError:
+            pass
+        if is_monthly:
+            mon_str = month_names.get(mon, mon)
+            return f"{exch}:{und}{yr_short}{mon_str}{strike}{opt_type}"
+        m_code = weekly_codes.get(mon, mon)
+        return f"{exch}:{und}{yr_short}{m_code}{day}{strike}{opt_type}"
     return s
 
 

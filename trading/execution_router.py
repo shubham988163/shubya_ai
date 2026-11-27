@@ -334,6 +334,26 @@ class ExecutionRouter:
 
         if self.mode == "paper":
             fill = self.simulate_fill(signal)
+            sym = str(signal.get("symbol", ""))
+            is_opt = bool(signal.get("is_option")) or bool(re.search(r"\d+(?:CE|PE)$", sym))
+            if is_opt:
+                sig_px = float(signal.get("price") or 0.0)
+                sl = float(signal.get("stop_loss") or 0.0)
+                tgt = float(signal.get("target") or 0.0)
+                side = str(signal.get("side", "BUY")).upper()
+                # Guard against stale/mismatched live option quotes (e.g., weekly vs monthly expiry mismatch)
+                if sig_px > 0 and abs(fill - sig_px) / sig_px > 0.20:
+                    mismatch = f"fill_price_mismatch (quote {fill:.2f} diverges >20% from signal {sig_px:.2f})"
+                    self.last_rejection = mismatch
+                    self.ledger.record_rejection(signal, mismatch)
+                    return None
+                if (side == "BUY" and ((sl > 0 and fill <= sl) or (tgt > 0 and fill >= tgt))) or (
+                    side == "SELL" and ((sl > 0 and fill >= sl) or (tgt > 0 and fill <= tgt))
+                ):
+                    bracket_err = f"fill_outside_bracket (fill {fill:.2f} violates SL {sl:.2f} / target {tgt:.2f})"
+                    self.last_rejection = bracket_err
+                    self.ledger.record_rejection(signal, bracket_err)
+                    return None
             return self.ledger.record_entry(signal, fill_price=fill, mode="paper")
 
         # live mode: static IP + Algo-ID tagging handled by broker for
